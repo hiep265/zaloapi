@@ -1,0 +1,191 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Zalo API Express Backend",
+    "version": "1.0.0",
+    "description": "Tài liệu API cho backend tích hợp zca-js và PostgreSQL."
+  },
+  "servers": [
+    { "url": "http://localhost:3000", "description": "Local" }
+  ],
+  "paths": {
+    "/api/auth/qr": {
+      "get": {
+        "summary": "Đăng nhập Zalo qua QR (SSE)",
+        "description": "Trả về dòng sự kiện Server-Sent Events gồm các type: QRCodeGenerated, QRCodeExpired, QRCodeScanned, QRCodeDeclined, GotLoginInfo, SessionSaved.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "key",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Session key duy nhất, nên truyền user_id của hệ thống bạn để lưu phiên theo người dùng"
+          },
+          {
+            "in": "query",
+            "name": "ua",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "User-Agent dùng cho loginQR"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string", "example": "data: {\"type\":\"QRCodeGenerated\",\"data\":{...}}\\n\\n" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/session/{key}": {
+      "get": {
+        "summary": "Kiểm tra trạng thái phiên theo session_key",
+        "parameters": [
+          { "in": "path", "name": "key", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trạng thái phiên",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "exists": { "type": "boolean" },
+                    "account_id": { "type": "string" },
+                    "updated_at": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Không tìm thấy phiên theo key" }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Kiểm tra tình trạng server",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "uptime": { "type": "number" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/session": {
+      "post": {
+        "summary": "Thiết lập phiên Zalo đang active",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Thiết lập thành công",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "session_id": { "type": "string", "format": "uuid" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Thiếu tham số" }
+        }
+      }
+    },
+    "/api/users/map": {
+      "post": {
+        "summary": "Ánh xạ external_user_id sang zalo_uid",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MapUserRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "OK" },
+          "400": { "description": "Thiếu tham số" }
+        }
+      }
+    },
+    "/api/users/{external_user_id}": {
+      "get": {
+        "summary": "Lấy profile theo external_user_id",
+        "parameters": [
+          { "in": "path", "name": "external_user_id", "required": true, "schema": { "type": "string" } },
+          { "in": "query", "name": "refresh", "required": false, "schema": { "type": "boolean" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "data": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Chưa có mapping" }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SetSessionRequest": {
+        "type": "object",
+        "required": ["cookies_json", "imei", "user_agent"],
+        "properties": {
+          "cookies_json": { "type": "array", "items": { "type": "object" } },
+          "imei": { "type": "string" },
+          "user_agent": { "type": "string" },
+          "language": { "type": "string", "default": "vi" },
+          "account_id": { "type": "string" }
+        }
+      },
+      "MapUserRequest": {
+        "type": "object",
+        "required": ["external_user_id", "zalo_uid"],
+        "properties": {
+          "external_user_id": { "type": "string" },
+          "zalo_uid": { "type": "string" }
+        }
+      }
+    }
+  }
+}
