@@ -11,6 +11,14 @@ export async function getActiveSession() {
   return res.rows[0] || null;
 }
 
+export async function setAccountIdBySessionKey(session_key, account_id) {
+  const res = await db.query(
+    `UPDATE sessions SET account_id=$2, updated_at=NOW() WHERE session_key=$1 RETURNING id`,
+    [session_key, account_id]
+  );
+  return res.rows[0]?.id || null;
+}
+
 export async function listActiveSessions() {
   const res = await db.query(
     `SELECT id, account_id, cookies_json, imei, user_agent, language, is_active, updated_at, session_key
@@ -79,4 +87,5 @@ export default {
   upsertActiveSession,
   getBySessionKey,
   upsertBySessionKey,
+  setAccountIdBySessionKey,
 };

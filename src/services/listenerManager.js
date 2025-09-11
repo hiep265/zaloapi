@@ -1,7 +1,6 @@
 import { Zalo, ThreadType } from 'zca-js';
-import { listActiveSessions } from '../repositories/session.repository.js';
+import { listActiveSessions, setAccountIdBySessionKey } from '../repositories/session.repository.js';
 import { saveIncomingMessage } from '../repositories/message.repository.js';
-import { postToDangbai } from '../utils/dangbaiClient.js';
 import { acquireLock, releaseLock } from '../utils/lock.js';
 
 const activeListeners = new Map(); // account_id -> { api, stop, session_key }
@@ -110,7 +109,7 @@ export async function startListenerForSession(sessionRow) {
     return;
   }
 
-  const zalo = new Zalo({ checkUpdate: false });
+  const zalo = new Zalo({ checkUpdate: false, selfListen: true });
   let api;
   try {
     const cookieLen = Array.isArray(cookie) ? cookie.length : (cookie || '').length;
@@ -125,34 +124,123 @@ export async function startListenerForSession(sessionRow) {
     return;
   }
 
+  // Ensure we know our own account_id (uid)
+  let accId = account_id;
+  if (!accId) {
+    try {
+      accId = await api.getOwnId();
+      if (accId) {
+        await setAccountIdBySessionKey(session_key, String(accId));
+        console.log('[Listener] populated account_id for session', session_key, '=>', accId);
+      }
+    } catch (e) {
+      console.warn('[Listener] getOwnId failed:', e?.message || String(e));
+    }
+  }
+
   api.listener.on('message', async (message) => {
     try {
-      const isText = typeof message?.data?.content === 'string';
-      if (!isText) return;
+      const d = message?.data || {};
+      const isText = typeof d.content === 'string';
+      if (!isText) {
+        console.log('[Listener] skip non-text message', {
+          type: message?.type,
+          hasContent: typeof d.content,
+          keys: Object.keys(d || {}),
+        });
+        return;
+      }
 
-      const threadType = message.type; // ThreadType.User / ThreadType.Group
-      const peerId = message?.data?.senderId || message?.data?.groupId || null;
-      const content = message.data.content;
-      const msgId = message?.data?.messageId || `${Date.now()}-${Math.random()}`;
+      // Map fields from zca-js payload
+      const fromUid = d.uidFrom || d.senderId || null; // người gửi
+      const toUid = d.idTo || d.userId || d.groupId || null; // đích đến
+      const msgId = d.msgId || d.messageId || `${Date.now()}-${Math.random()}`;
+      const content = d.content;
+      const msgType = d.msgType || d.type || null;
+      const cmd = typeof d.cmd !== 'undefined' ? Number(d.cmd) : null;
+      const ts = d.ts ? Number(d.ts) : null;
+      const threadId = message?.threadId || d.threadId || null;
+
+      // Suy luận peer_id
+      // - Group: nếu không có d.groupId thì dùng threadId khi type === 1 (group)
+      // - 1-1: dùng 'đối phương' làm peer_id (out -> toUid, in -> fromUid)
+      const inferredGroupId = d.groupId || (d.type === 1 ? (threadId || null) : null);
+      const isGroup = !!inferredGroupId || d.type === 1 || message?.type === 1;
+      const threadType = isGroup ? ThreadType.Group : ThreadType.User;
+      const direction = (fromUid && accId && String(fromUid) === String(accId)) ? 'out' : 'in';
+      const peerId = isGroup
+        ? (threadId || inferredGroupId)
+        : (direction === 'out' ? (toUid || d.idTo || d.userId || null) : (fromUid || d.uidFrom || d.senderId || null));
+
+      // Fetch group info if this is a group message
+      let groupName = null;
+      if (isGroup && (threadId || inferredGroupId)) {
+        try {
+          const gid = threadId || inferredGroupId;
+          const groupInfo = await api.getGroupInfo(gid);
+          if (groupInfo?.gridInfoMap?.[gid]?.name) {
+            groupName = groupInfo.gridInfoMap[gid].name;
+            console.log('[Listener] fetched group name:', groupName, 'for groupId:', gid);
+          }
+        } catch (groupErr) {
+          console.warn('[Listener] failed to fetch group info for', threadId || inferredGroupId, ':', groupErr?.message || groupErr);
+        }
+      }
+
+      console.log('[Listener] message received', {
+        session_key,
+        account_id: accId || account_id,
+        direction,
+        peerId,
+        msgId,
+        msgType,
+      });
 
       await saveIncomingMessage({
         session_key,
-        account_id,
+        account_id: accId || account_id,
+        // New Zalo message fields
+        type: d.type,
+        thread_id: threadId,
+        id_to: d.idTo,
+        uid_from: d.uidFrom,
+        d_name: d.dName, // Keep sender name in d_name
+        group_name: groupName, // Store group name separately
+        is_self: message?.isSelf,
+        content,
+        msg_type: d.msgType,
+        property_ext: d.propertyExt,
+        quote: d.quote,
+        mentions: d.mentions,
+        attachments_json: message?.data?.attachments || null,
+        ts: d.ts,
+        msg_id: d.msgId,
+        cli_msg_id: d.cliMsgId,
+        global_msg_id: d.globalMsgId,
+        real_msg_id: d.realMsgId,
+        cmd: d.cmd,
+        st: d.st,
+        status: d.status,
+        ttl: d.ttl,
+        notify: d.notify,
+        top_out: d.topOut,
+        top_out_time_out: d.topOutTimeOut,
+        top_out_impr_time_out: d.topOutImprTimeOut,
+        action_id: d.actionId,
+        uin: d.uin,
+        user_id: d.userId,
+        params_ext: d.paramsExt,
+        raw_json: message,
+        // Legacy compatibility fields
         thread_type: threadType,
         peer_id: String(peerId || ''),
-        content,
+        direction,
         message_id: String(msgId),
-        attachments_json: message?.data?.attachments || null,
+        from_uid: fromUid ? String(fromUid) : null,
+        to_uid: toUid ? String(toUid) : null,
       });
 
-      await postToDangbai('/api/v1/zalo/messages/incoming', {
-        session_key,
-        account_id,
-        thread_type: threadType,
-        peer_id,
-        content,
-        message_id: msgId,
-      });
+      // No outbound POST. Dangbai will fetch via GET /api/messages
     } catch (err) {
       console.error('[Listener] handle message error', err.message || err);
     }

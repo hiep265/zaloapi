@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zalo Messages - Chat Interface</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            height: 100vh;
+            display: flex;
+        }
+
+        .sidebar {
+            width: 320px;
+            background: white;
+            border-right: 1px solid #e0e0e0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #e0e0e0;
+            background: #0084ff;
+            color: white;
+        }
+
+        .sidebar-header h2 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .session-input {
+            padding: 15px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .session-input input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .conversations {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .conversation-item {
+            padding: 15px;
+            border-bottom: 1px solid #f0f0f0;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .conversation-item:hover {
+            background: #f8f9fa;
+        }
+
+        .conversation-item.active {
+            background: #e3f2fd;
+            border-right: 3px solid #0084ff;
+        }
+
+        .conversation-name {
+            font-weight: 600;
+            font-size: 14px;
+            color: #333;
+            margin-bottom: 4px;
+        }
+
+        .conversation-preview {
+            font-size: 13px;
+            color: #666;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .conversation-time {
+            font-size: 11px;
+            color: #999;
+            float: right;
+        }
+
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: white;
+        }
+
+        .chat-header {
+            padding: 20px;
+            border-bottom: 1px solid #e0e0e0;
+            background: white;
+        }
+
+        .chat-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .messages-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            display: flex;
+            align-items: flex-start;
+        }
+
+        .message.self {
+            flex-direction: row-reverse;
+        }
+
+        .message-bubble {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            font-size: 14px;
+            line-height: 1.4;
+            word-wrap: break-word;
+        }
+
+        .message.self .message-bubble {
+            background: #0084ff;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message:not(.self) .message-bubble {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message-info {
+            font-size: 11px;
+            color: #666;
+            margin: 4px 12px 0;
+        }
+
+        .message.self .message-info {
+            text-align: right;
+        }
+
+        .quoted-message {
+            background: rgba(255, 255, 255, 0.2);
+            border-left: 3px solid rgba(255, 255, 255, 0.5);
+            padding: 8px 12px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            opacity: 0.8;
+        }
+
+        .message:not(.self) .quoted-message {
+            background: #f0f0f0;
+            border-left-color: #ccc;
+        }
+
+        .mentions {
+            color: #0084ff;
+            font-weight: 600;
+        }
+
+        .empty-state {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #666;
+            font-size: 16px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 10px;
+            margin: 10px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 100%;
+                position: absolute;
+                z-index: 10;
+                height: 100%;
+                transform: translateX(-100%);
+                transition: transform 0.3s;
+            }
+
+            .sidebar.open {
+                transform: translateX(0);
+            }
+
+            .chat-area {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h2>Zalo Messages</h2>
+        </div>
+        
+        <div class="session-input">
+            <input type="text" id="sessionKey" placeholder="Enter session key..." />
+        </div>
+        
+        <div class="conversations" id="conversations">
+            <div class="loading">Enter session key to load conversations</div>
+        </div>
+    </div>
+
+    <div class="chat-area">
+        <div class="chat-header">
+            <h3 id="chatTitle">Select a conversation</h3>
+        </div>
+        
+        <div class="messages-container" id="messagesContainer">
+            <div class="empty-state">
+                Select a conversation to view messages
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class ZaloMessagesApp {
+            constructor() {
+                this.sessionKey = '';
+                this.activeConversation = null;
+                this.conversations = [];
+                this.messages = [];
+                
+                this.initEventListeners();
+            }
+
+            initEventListeners() {
+                const sessionInput = document.getElementById('sessionKey');
+                sessionInput.addEventListener('input', (e) => {
+                    this.sessionKey = e.target.value.trim();
+                    if (this.sessionKey) {
+                        this.loadConversations();
+                    } else {
+                        this.clearConversations();
+                    }
+                });
+            }
+
+            async loadConversations() {
+                if (!this.sessionKey) return;
+
+                const conversationsEl = document.getElementById('conversations');
+                conversationsEl.innerHTML = '<div class="loading">Loading conversations...</div>';
+
+                try {
+                    const response = await fetch(`/api/messages/threads/${encodeURIComponent(this.sessionKey)}`);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    
+                    const data = await response.json();
+                    this.conversations = data.items || [];
+                    this.renderConversations();
+                } catch (error) {
+                    console.error('Error loading conversations:', error);
+                    conversationsEl.innerHTML = `<div class="error">Error loading conversations: ${error.message}</div>`;
+                }
+            }
+
+            renderConversations() {
+                const conversationsEl = document.getElementById('conversations');
+                
+                if (this.conversations.length === 0) {
+                    conversationsEl.innerHTML = '<div class="loading">No conversations found</div>';
+                    return;
+                }
+
+                conversationsEl.innerHTML = this.conversations.map(conv => {
+                    const name = conv.d_name || conv.conversation_id || 'Unknown';
+                    const preview = conv.last_content || 'No messages';
+                    const time = conv.last_ts ? new Date(conv.last_ts).toLocaleTimeString() : '';
+                    const isGroup = conv.type === 1;
+                    
+                    return `
+                        <div class="conversation-item" data-id="${conv.conversation_id}" data-thread-id="${conv.thread_id || ''}" data-peer-id="${conv.peer_id || ''}">
+                            <div class="conversation-time">${time}</div>
+                            <div class="conversation-name">${isGroup ? '👥 ' : ''}${name}</div>
+                            <div class="conversation-preview">${preview}</div>
+                        </div>
+                    `;
+                }).join('');
+
+                // Add click listeners
+                conversationsEl.querySelectorAll('.conversation-item').forEach(item => {
+                    item.addEventListener('click', () => {
+                        const conversationId = item.dataset.id;
+                        const threadId = item.dataset.threadId;
+                        const peerId = item.dataset.peerId;
+                        this.selectConversation(conversationId, threadId, peerId, item);
+                    });
+                });
+            }
+
+            selectConversation(conversationId, threadId, peerId, element) {
+                // Update active state
+                document.querySelectorAll('.conversation-item').forEach(el => el.classList.remove('active'));
+                element.classList.add('active');
+
+                this.activeConversation = { conversationId, threadId, peerId };
+                this.loadMessages();
+            }
+
+            async loadMessages() {
+                if (!this.sessionKey || !this.activeConversation) return;
+
+                const messagesEl = document.getElementById('messagesContainer');
+                const chatTitle = document.getElementById('chatTitle');
+                
+                messagesEl.innerHTML = '<div class="loading">Loading messages...</div>';
+                
+                const conv = this.conversations.find(c => c.conversation_id === this.activeConversation.conversationId);
+                chatTitle.textContent = conv ? (conv.d_name || conv.conversation_id) : 'Conversation';
+
+                try {
+                    const params = new URLSearchParams();
+                    if (this.activeConversation.threadId) {
+                        params.set('thread_id', this.activeConversation.threadId);
+                    } else if (this.activeConversation.peerId) {
+                        params.set('peer_id', this.activeConversation.peerId);
+                    }
+                    params.set('limit', '100');
+                    params.set('order', 'asc');
+
+                    const response = await fetch(`/api/messages/conversation/${encodeURIComponent(this.sessionKey)}?${params}`);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    
+                    const data = await response.json();
+                    this.messages = data.items || [];
+                    this.renderMessages();
+                } catch (error) {
+                    console.error('Error loading messages:', error);
+                    messagesEl.innerHTML = `<div class="error">Error loading messages: ${error.message}</div>`;
+                }
+            }
+
+            renderMessages() {
+                const messagesEl = document.getElementById('messagesContainer');
+                
+                if (this.messages.length === 0) {
+                    messagesEl.innerHTML = '<div class="empty-state">No messages in this conversation</div>';
+                    return;
+                }
+
+                messagesEl.innerHTML = this.messages.map(msg => {
+                    const isSelf = msg.is_self;
+                    const senderName = msg.d_name || msg.uid_from || 'Unknown';
+                    const time = msg.ts ? new Date(msg.ts).toLocaleTimeString() : 
+                                 new Date(msg.created_at).toLocaleTimeString();
+                    
+                    let quotedHtml = '';
+                    if (msg.quote && typeof msg.quote === 'object') {
+                        const quote = typeof msg.quote === 'string' ? JSON.parse(msg.quote) : msg.quote;
+                        quotedHtml = `<div class="quoted-message">↳ ${quote.content || 'Quoted message'}</div>`;
+                    }
+
+                    let content = msg.content || '';
+                    
+                    // Handle mentions
+                    if (msg.mentions && typeof msg.mentions === 'object') {
+                        const mentions = typeof msg.mentions === 'string' ? JSON.parse(msg.mentions) : msg.mentions;
+                        if (Array.isArray(mentions)) {
+                            mentions.forEach(mention => {
+                                if (mention.name) {
+                                    content = content.replace(new RegExp(`@${mention.name}`, 'g'), 
+                                                            `<span class="mentions">@${mention.name}</span>`);
+                                }
+                            });
+                        }
+                    }
+
+                    return `
+                        <div class="message ${isSelf ? 'self' : ''}">
+                            <div class="message-bubble">
+                                ${quotedHtml}
+                                <div>${content}</div>
+                            </div>
+                            <div class="message-info">
+                                ${!isSelf ? senderName + ' • ' : ''}${time}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                // Scroll to bottom
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+
+            clearConversations() {
+                document.getElementById('conversations').innerHTML = '<div class="loading">Enter session key to load conversations</div>';
+                document.getElementById('messagesContainer').innerHTML = '<div class="empty-state">Select a conversation to view messages</div>';
+                document.getElementById('chatTitle').textContent = 'Select a conversation';
+                this.activeConversation = null;
+            }
+        }
+
+        // Initialize the app
+        new ZaloMessagesApp();
+    </script>
+</body>
+</html>

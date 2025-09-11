@@ -5,6 +5,8 @@ import routes from './routes/index.js';
 import { notFoundHandler, errorHandler } from './middlewares/errorHandler.js';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJSDoc from 'swagger-jsdoc';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 const app = express();
 
@@ -18,6 +20,10 @@ app.get('/health', (req, res) => {
 });
 
 // API Docs (auto-generated from JSDoc)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const routesGlob = path.join(__dirname, 'routes/**/*.js');
+const controllersGlob = path.join(__dirname, 'controllers/**/*.js');
 const swaggerSpec = swaggerJSDoc({
   definition: {
     openapi: '3.0.3',
@@ -28,9 +34,12 @@ const swaggerSpec = swaggerJSDoc({
     },
     servers: [{ url: 'http://localhost:3000' }],
   },
-  apis: ['src/routes/**/*.js', 'src/controllers/**/*.js'],
+  apis: [routesGlob, controllersGlob],
 });
-app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
+
+// Serve static files from public directory
+app.use(express.static(path.join(__dirname, '../public')));
 
 app.use('/api', routes);
 
