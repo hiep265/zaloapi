@@ -81,6 +81,18 @@ export async function upsertBySessionKey({ session_key, account_id, cookies_json
   return res.rows[0];
 }
 
+export async function deleteSessionByKey(session_key) {
+  // Set session as inactive instead of deleting to preserve message data relationships
+  const res = await db.query(
+    `UPDATE sessions SET is_active = false, updated_at = NOW() 
+     WHERE session_key = $1 AND is_active = true
+     RETURNING id`,
+    [session_key]
+  );
+  console.log('[DB] deleteSessionByKey deactivated session:', session_key, 'id:', res.rows[0]?.id);
+  return res.rows[0]?.id || null;
+}
+
 export default {
   getActiveSession,
   listActiveSessions,
@@ -88,4 +100,5 @@ export default {
   getBySessionKey,
   upsertBySessionKey,
   setAccountIdBySessionKey,
+  deleteSessionByKey,
 };

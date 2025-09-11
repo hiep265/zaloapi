@@ -1,5 +1,5 @@
 import { Zalo, ThreadType } from 'zca-js';
-import { listActiveSessions, setAccountIdBySessionKey } from '../repositories/session.repository.js';
+import { listActiveSessions, setAccountIdBySessionKey, deleteSessionByKey } from '../repositories/session.repository.js';
 import { saveIncomingMessage } from '../repositories/message.repository.js';
 import { acquireLock, releaseLock } from '../utils/lock.js';
 
@@ -118,7 +118,32 @@ export async function startListenerForSession(sessionRow) {
   } catch (e) {
     const msg = e?.message || String(e);
     console.warn('[Listener] login error for', accKey, msg);
-    // Release lock and retry later (backoff 10s)
+    
+    // Check if this is an authentication failure (user logged in elsewhere)
+    const isAuthFailure = msg.includes('authentication') || 
+                         msg.includes('unauthorized') || 
+                         msg.includes('invalid') ||
+                         msg.includes('expired') ||
+                         msg.includes('login') ||
+                         msg.toLowerCase().includes('auth') ||
+                         msg.includes('Đăng nhập thất bại') ||
+                         msg.includes('Cookie not in this host') ||
+                         msg.includes('domain');
+    
+    if (isAuthFailure) {
+      console.warn('[Listener] authentication failure detected, deactivating session:', session_key);
+      try {
+        await deleteSessionByKey(session_key);
+        console.log('[Listener] session deactivated due to auth failure:', session_key);
+      } catch (deleteErr) {
+        console.error('[Listener] failed to deactivate session:', session_key, deleteErr.message);
+      }
+      // Don't retry for auth failures - user needs to login again
+      await releaseLock(lockKey);
+      return;
+    }
+    
+    // For other errors, release lock and retry later (backoff 10s)
     await releaseLock(lockKey);
     setTimeout(() => startListenerForSession(sessionRow).catch(console.error), 10000);
     return;
@@ -142,9 +167,12 @@ export async function startListenerForSession(sessionRow) {
     try {
       const d = message?.data || {};
       const isText = typeof d.content === 'string';
-      if (!isText) {
-        console.log('[Listener] skip non-text message', {
+      const isPhoto = d.msgType === 'chat.photo' && typeof d.content === 'object' && d.content !== null;
+      
+      if (!isText && !isPhoto) {
+        console.log('[Listener] skip unsupported message', {
           type: message?.type,
+          msgType: d.msgType,
           hasContent: typeof d.content,
           keys: Object.keys(d || {}),
         });
@@ -155,7 +183,25 @@ export async function startListenerForSession(sessionRow) {
       const fromUid = d.uidFrom || d.senderId || null; // người gửi
       const toUid = d.idTo || d.userId || d.groupId || null; // đích đến
       const msgId = d.msgId || d.messageId || `${Date.now()}-${Math.random()}`;
-      const content = d.content;
+      
+      // Handle content based on message type
+      let content;
+      if (isText) {
+        content = d.content;
+      } else if (isPhoto) {
+        // For photo messages, store the image URL and metadata
+        content = JSON.stringify({
+          type: 'photo',
+          href: d.content.href,
+          thumb: d.content.thumb,
+          title: d.content.title || '',
+          description: d.content.description || '',
+          params: d.content.params || '',
+          width: d.content.params ? JSON.parse(d.content.params || '{}').width : null,
+          height: d.content.params ? JSON.parse(d.content.params || '{}').height : null,
+        });
+      }
+      
       const msgType = d.msgType || d.type || null;
       const cmd = typeof d.cmd !== 'undefined' ? Number(d.cmd) : null;
       const ts = d.ts ? Number(d.ts) : null;
