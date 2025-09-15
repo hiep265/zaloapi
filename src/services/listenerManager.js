@@ -86,84 +86,85 @@ export async function startAllListeners() {
 }
 
 export async function startListenerForSession(sessionRow) {
-  const { session_key, account_id, cookies_json, imei, user_agent, language } = sessionRow;
-  const cookie = extractCookie(cookies_json);
-  if (!cookie) {
-    // avoid printing full cookie_json; print type and keys to debug shape
-    const shape = cookies_json ? (typeof cookies_json === 'string' ? 'string' : `object keys: ${Object.keys(cookies_json||{}).join(',')}`) : 'null';
-    console.warn('[Listener] missing cookie for', session_key, 'cookies_json shape:', shape);
-    return;
-  }
-
-  const accKey = account_id || session_key;
-  const lockKey = `zalo:listener:account:${accKey}`;
-  const locked = await acquireLock(lockKey, 30);
-  if (!locked) {
-    console.log('[Listener] lock busy skip', accKey);
-    return;
-  }
-
-  if (activeListeners.has(accKey)) {
-    await releaseLock(lockKey);
-    console.log('[Listener] already running', accKey);
-    return;
-  }
-
-  const zalo = new Zalo({ checkUpdate: false, selfListen: true });
-  let api;
   try {
-    const cookieLen = Array.isArray(cookie) ? cookie.length : (cookie || '').length;
-    console.log('[Listener] login for', accKey, 'cookie.len=', cookieLen, Array.isArray(cookie) ? '(array)' : '(string)');
-    api = await zalo.login({ cookie, imei, userAgent: user_agent, language: language || 'vi' });
-  } catch (e) {
-    const msg = e?.message || String(e);
-    console.warn('[Listener] login error for', accKey, msg);
-    
-    // Check if this is an authentication failure (user logged in elsewhere)
-    const isAuthFailure = msg.includes('authentication') || 
-                         msg.includes('unauthorized') || 
-                         msg.includes('invalid') ||
-                         msg.includes('expired') ||
-                         msg.includes('login') ||
-                         msg.toLowerCase().includes('auth') ||
-                         msg.includes('Đăng nhập thất bại') ||
-                         msg.includes('Cookie not in this host') ||
-                         msg.includes('domain');
-    
-    if (isAuthFailure) {
-      console.warn('[Listener] authentication failure detected, deactivating session:', session_key);
-      try {
-        await deleteSessionByKey(session_key);
-        console.log('[Listener] session deactivated due to auth failure:', session_key);
-      } catch (deleteErr) {
-        console.error('[Listener] failed to deactivate session:', session_key, deleteErr.message);
-      }
-      // Don't retry for auth failures - user needs to login again
-      await releaseLock(lockKey);
+    const { session_key, account_id, cookies_json, imei, user_agent, language } = sessionRow;
+    const cookie = extractCookie(cookies_json);
+    if (!cookie) {
+      // avoid printing full cookie_json; print type and keys to debug shape
+      const shape = cookies_json ? (typeof cookies_json === 'string' ? 'string' : `object keys: ${Object.keys(cookies_json||{}).join(',')}`) : 'null';
+      console.warn('[Listener] missing cookie for', session_key, 'cookies_json shape:', shape);
       return;
     }
-    
-    // For other errors, release lock and retry later (backoff 10s)
-    await releaseLock(lockKey);
-    setTimeout(() => startListenerForSession(sessionRow).catch(console.error), 10000);
-    return;
-  }
 
-  // Ensure we know our own account_id (uid)
-  let accId = account_id;
-  if (!accId) {
-    try {
-      accId = await api.getOwnId();
-      if (accId) {
-        await setAccountIdBySessionKey(session_key, String(accId));
-        console.log('[Listener] populated account_id for session', session_key, '=>', accId);
-      }
-    } catch (e) {
-      console.warn('[Listener] getOwnId failed:', e?.message || String(e));
+    const accKey = account_id || session_key;
+    const lockKey = `zalo:listener:account:${accKey}`;
+    const locked = await acquireLock(lockKey, 30);
+    if (!locked) {
+      console.log('[Listener] lock busy skip', accKey);
+      return;
     }
-  }
 
-  api.listener.on('message', async (message) => {
+    if (activeListeners.has(accKey)) {
+      await releaseLock(lockKey);
+      console.log('[Listener] already running', accKey);
+      return;
+    }
+
+    const zalo = new Zalo({ checkUpdate: false, selfListen: true });
+    let api;
+    try {
+      const cookieLen = Array.isArray(cookie) ? cookie.length : (cookie || '').length;
+      console.log('[Listener] login for', accKey, 'cookie.len=', cookieLen, Array.isArray(cookie) ? '(array)' : '(string)');
+      api = await zalo.login({ cookie, imei, userAgent: user_agent, language: language || 'vi' });
+    } catch (e) {
+      const msg = e?.message || String(e);
+      console.warn('[Listener] login error for', accKey, msg);
+      
+      // Check if this is an authentication failure (user logged in elsewhere)
+      const isAuthFailure = msg.includes('authentication') || 
+                           msg.includes('unauthorized') || 
+                           msg.includes('invalid') ||
+                           msg.includes('expired') ||
+                           msg.includes('login') ||
+                           msg.toLowerCase().includes('auth') ||
+                           msg.includes('Đăng nhập thất bại') ||
+                           msg.includes('Cookie not in this host') ||
+                           msg.includes('domain');
+      
+      if (isAuthFailure) {
+        console.warn('[Listener] authentication failure detected, deactivating session:', session_key);
+        try {
+          await deleteSessionByKey(session_key);
+          console.log('[Listener] session deactivated due to auth failure:', session_key);
+        } catch (deleteErr) {
+          console.error('[Listener] failed to deactivate session:', session_key, deleteErr.message);
+        }
+        // Don't retry for auth failures - user needs to login again
+        await releaseLock(lockKey);
+        return;
+      }
+      
+      // For other errors, release lock and retry later (backoff 10s)
+      await releaseLock(lockKey);
+      setTimeout(() => startListenerForSession(sessionRow).catch(console.error), 10000);
+      return;
+    }
+
+    // Ensure we know our own account_id (uid)
+    let accId = account_id;
+    if (!accId) {
+      try {
+        accId = await api.getOwnId();
+        if (accId) {
+          await setAccountIdBySessionKey(session_key, String(accId));
+          console.log('[Listener] populated account_id for session', session_key, '=>', accId);
+        }
+      } catch (e) {
+        console.warn('[Listener] getOwnId failed:', e?.message || String(e));
+      }
+    }
+
+    api.listener.on('message', async (message) => {
     try {
       const d = message?.data || {};
       const isText = typeof d.content === 'string';
@@ -197,8 +198,22 @@ export async function startListenerForSession(sessionRow) {
           title: d.content.title || '',
           description: d.content.description || '',
           params: d.content.params || '',
-          width: d.content.params ? JSON.parse(d.content.params || '{}').width : null,
-          height: d.content.params ? JSON.parse(d.content.params || '{}').height : null,
+          width: d.content.params ? (() => {
+            try {
+              return JSON.parse(d.content.params || '{}').width;
+            } catch (e) {
+              console.warn('[Listener] Failed to parse params for width:', e.message);
+              return null;
+            }
+          })() : null,
+          height: d.content.params ? (() => {
+            try {
+              return JSON.parse(d.content.params || '{}').height;
+            } catch (e) {
+              console.warn('[Listener] Failed to parse params for height:', e.message);
+              return null;
+            }
+          })() : null,
         });
       }
       
@@ -292,16 +307,32 @@ export async function startListenerForSession(sessionRow) {
     }
   });
 
-  api.listener.on('stop', async () => {
-    console.warn('[Listener] stopped', accKey);
-    activeListeners.delete(accKey);
-    await releaseLock(lockKey);
-    setTimeout(() => startListenerForSession(sessionRow).catch(console.error), 5000);
-  });
+    api.listener.on('stop', async () => {
+      console.warn('[Listener] stopped', accKey);
+      activeListeners.delete(accKey);
+      await releaseLock(lockKey);
+      setTimeout(() => startListenerForSession(sessionRow).catch(console.error), 5000);
+    });
 
-  api.listener.start();
-  activeListeners.set(accKey, { api, stop: () => api.listener.stop(), session_key });
-  console.log('[Listener] started', accKey);
+    // Add global error handler for the listener
+    api.listener.on('error', (error) => {
+      console.error('[Listener] Listener error for', accKey, ':', error.message || error);
+      // Don't crash the entire process, just log the error
+    });
+
+    api.listener.start();
+    activeListeners.set(accKey, { api, stop: () => api.listener.stop(), session_key });
+    console.log('[Listener] started', accKey);
+  } catch (error) {
+    console.error('[Listener] Failed to start listener for session', sessionRow?.session_key, ':', error.message || error);
+    // Optionally retry after a delay
+    if (sessionRow?.session_key) {
+      setTimeout(() => {
+        console.log('[Listener] Retrying to start listener for session', sessionRow.session_key);
+        startListenerForSession(sessionRow).catch(console.error);
+      }, 10000); // Retry after 10 seconds
+    }
+  }
 }
 
 export function listRunning() {
