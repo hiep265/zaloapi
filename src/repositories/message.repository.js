@@ -175,35 +175,51 @@ export async function queryMessages({
 export async function getThreadsByUser(session_key, { limit = 50, offset = 0 } = {}) {
   // Latest message per thread_id for this user (session_key)
   const sql = `
-    WITH ranked AS (
-      SELECT m.*, ROW_NUMBER() OVER (
-        PARTITION BY COALESCE(m.thread_id, m.peer_id)
-        ORDER BY COALESCE(to_timestamp(m.ts/1000.0), m.created_at) DESC, m.created_at DESC
-      ) AS rn
+    WITH messages_with_conv AS (
+      SELECT m.*, COALESCE(m.thread_id, m.peer_id) AS conv_id,
+             COALESCE(to_timestamp(m.ts/1000.0), m.created_at) AS msg_time
       FROM messages m
       WHERE m.session_key = $1
+    ),
+    ranked AS (
+      SELECT mwc.*, ROW_NUMBER() OVER (
+        PARTITION BY mwc.conv_id
+        ORDER BY mwc.msg_time DESC, mwc.created_at DESC
+      ) AS rn
+      FROM messages_with_conv mwc
+    ),
+    names AS (
+      SELECT
+        conv_id,
+        COALESCE(
+          MAX(group_name) FILTER (WHERE group_name IS NOT NULL),
+          (ARRAY_AGG(d_name ORDER BY msg_time DESC, created_at DESC) FILTER (WHERE d_name IS NOT NULL))[1]
+        ) AS display_name
+      FROM messages_with_conv
+      GROUP BY conv_id
     )
     SELECT
-      COALESCE(thread_id, peer_id) as conversation_id,
-      thread_id,
-      peer_id,
-      account_id,
-      type,
-      id_to,
-      uid_from,
-      d_name,
-      group_name,
-      is_self,
-      content AS last_content,
-      msg_type AS last_msg_type,
-      ts AS last_ts,
-      direction AS last_direction,
-      message_id AS last_message_id,
-      cmd AS last_cmd,
-      created_at AS last_created_at
-    FROM ranked
-    WHERE rn = 1
-    ORDER BY COALESCE(to_timestamp(ts/1000.0), created_at) DESC, created_at DESC
+      COALESCE(r.thread_id, r.peer_id) AS conversation_id,
+      r.thread_id AS thread_id,
+      r.peer_id AS peer_id,
+      r.account_id AS account_id,
+      r.type AS type,
+      r.id_to AS id_to,
+      r.uid_from AS uid_from,
+      n.display_name AS d_name,
+      r.group_name AS group_name,
+      r.is_self AS is_self,
+      r.content AS last_content,
+      r.msg_type AS last_msg_type,
+      r.ts AS last_ts,
+      r.direction AS last_direction,
+      r.message_id AS last_message_id,
+      r.cmd AS last_cmd,
+      r.created_at AS last_created_at
+    FROM ranked r
+    JOIN names n ON n.conv_id = COALESCE(r.thread_id, r.peer_id)
+    WHERE r.rn = 1
+    ORDER BY r.msg_time DESC, r.created_at DESC
     LIMIT $2 OFFSET $3
   `;
   const res = await db.query(sql, [session_key, Number(limit), Number(offset)]);

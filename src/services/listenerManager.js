@@ -257,6 +257,17 @@ export async function startListenerForSession(sessionRow) {
         msgType,
       });
 
+      // Normalize d_name to always mean: "tên của hội thoại/đối phương" (owner of the conversation)
+      // Theo yêu cầu:
+      // - Nếu tin nhắn là của tài khoản hiện tại (is_self === true) -> KHÔNG lưu d_name (để null)
+      // - Nếu không phải self:
+      //    + Group: dùng groupName
+      //    + 1-1: dùng tên người gửi (d.dName)
+      const isSelf = (typeof message?.isSelf === 'boolean') ? message.isSelf : (direction === 'out');
+      const normalizedDName = isSelf
+        ? null
+        : (isGroup ? (groupName || null) : (d.dName || null));
+
       await saveIncomingMessage({
         session_key,
         account_id: accId || account_id,
@@ -265,9 +276,9 @@ export async function startListenerForSession(sessionRow) {
         thread_id: threadId,
         id_to: d.idTo,
         uid_from: d.uidFrom,
-        d_name: d.dName, // Keep sender name in d_name
+        d_name: normalizedDName, // Always the conversation owner (group name or counterpart's name)
         group_name: groupName, // Store group name separately
-        is_self: message?.isSelf,
+        is_self: isSelf,
         content,
         msg_type: d.msgType,
         property_ext: d.propertyExt,
