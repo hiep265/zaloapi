@@ -20,3 +20,64 @@ export async function setActiveSession(req, res, next) {
     next(err);
   }
 }
+
+// PUT /api/session/:sessionKey/chatbot-priority
+// Body: { priority: 'mobile' | 'custom' }
+export async function setChatbotPriority(req, res, next) {
+  try {
+    const { sessionKey } = req.params;
+    const { priority } = req.body;
+
+    if (!sessionKey) {
+      return res.status(400).json({ error: 'sessionKey is required' });
+    }
+
+    // Normalize priority: allow 'null' (string) or null to clear priority
+    let normalizedPriority = priority;
+    if (typeof normalizedPriority === 'string' && normalizedPriority.toLowerCase() === 'null') {
+      normalizedPriority = null;
+    }
+    if (normalizedPriority !== null && !['mobile', 'custom'].includes(normalizedPriority)) {
+      return res.status(400).json({ error: 'priority must be either "mobile", "custom" or null' });
+    }
+
+    const result = await sessionRepo.setChatbotPriority(sessionKey, normalizedPriority);
+    
+    if (!result) {
+      return res.status(404).json({ error: 'Session not found or inactive' });
+    }
+
+    res.status(200).json({ 
+      ok: true, 
+      session_id: result.id, 
+      chatbot_priority: result.chatbot_priority 
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/session/:sessionKey/chatbot-priority
+export async function getChatbotPriority(req, res, next) {
+  try {
+    const { sessionKey } = req.params;
+
+    if (!sessionKey) {
+      return res.status(400).json({ error: 'sessionKey is required' });
+    }
+
+    const session = await sessionRepo.getBySessionKey(sessionKey);
+    
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found or inactive' });
+    }
+
+    res.status(200).json({ 
+      ok: true, 
+      session_id: session.id, 
+      chatbot_priority: session.chatbot_priority || 'mobile' 
+    });
+  } catch (err) {
+    next(err);
+  }
+}

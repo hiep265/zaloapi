@@ -98,4 +98,46 @@ router.get('/qr/image', authController.getQrImage);
 // Check session status by session key
 router.get('/session/:key', authController.getSessionStatus);
 
+/**
+ * @openapi
+ * /api/auth/logout:
+ *   post:
+ *     summary: Đăng xuất khỏi phiên Zalo
+ *     description: Dừng listener và vô hiệu hoá (deactivate) phiên trong cơ sở dữ liệu.
+ *     parameters:
+ *       - in: query
+ *         name: key
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: session_key cần đăng xuất. Nếu không truyền, hệ thống sẽ đăng xuất phiên đang hoạt động gần nhất.
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               key:
+ *                 type: string
+ *                 description: session_key (có thể truyền qua body hoặc query)
+ *     responses:
+ *       200:
+ *         description: Đăng xuất thành công
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 session_key:
+ *                   type: string
+ *                 account_id:
+ *                   type: string
+ *       404:
+ *         description: Không tìm thấy phiên cần đăng xuất
+ */
+router.post('/logout', authController.logoutSession);
+
 export default router;

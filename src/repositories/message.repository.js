@@ -117,6 +117,7 @@ export default {
   queryMessages,
   getThreadsByUser,
   getConversation,
+  markMessageReplied,
 };
 
 export async function queryMessages({
@@ -170,6 +171,22 @@ export async function queryMessages({
   vals.push(Number(offset));
   const res = await db.query(sql, vals);
   return res.rows || [];
+}
+
+export async function markMessageReplied(session_key, msg_id) {
+  if (!session_key || !msg_id) return false;
+  try {
+    const sql = `
+      UPDATE messages
+      SET replied = true, replied_at = NOW()
+      WHERE session_key = $1 AND msg_id = $2
+    `;
+    await db.query(sql, [session_key, msg_id]);
+    return true;
+  } catch (e) {
+    console.error('[repo] markMessageReplied error', e.message || e);
+    return false;
+  }
 }
 
 export async function getThreadsByUser(session_key, { limit = 50, offset = 0 } = {}) {

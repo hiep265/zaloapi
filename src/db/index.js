@@ -29,6 +29,7 @@ export async function migrate() {
         user_agent TEXT,
         language TEXT,
         session_key TEXT,
+        api_key TEXT,
         is_active BOOLEAN DEFAULT true,
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
@@ -42,6 +43,18 @@ export async function migrate() {
         WHERE table_name='sessions' AND column_name='session_key'
       ) THEN
         ALTER TABLE sessions ADD COLUMN session_key TEXT;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='sessions' AND column_name='api_key'
+      ) THEN
+        ALTER TABLE sessions ADD COLUMN api_key TEXT;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='sessions' AND column_name='chatbot_priority'
+      ) THEN
+        ALTER TABLE sessions ADD COLUMN chatbot_priority VARCHAR(20) DEFAULT 'mobile';
       END IF;
     END $$;`);
 
@@ -192,6 +205,13 @@ export async function migrate() {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='messages' AND column_name='conversation_id') THEN
           ALTER TABLE messages ADD COLUMN conversation_id UUID;
         END IF;
+        -- Mark if the message has been replied by AI/backend
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='messages' AND column_name='replied') THEN
+          ALTER TABLE messages ADD COLUMN replied BOOLEAN DEFAULT false;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='messages' AND column_name='replied_at') THEN
+          ALTER TABLE messages ADD COLUMN replied_at TIMESTAMPTZ;
+        END IF;
       END $$;
     `);
 
@@ -291,6 +311,20 @@ export async function migrate() {
       );
     `);
 
+    // Create ignored_conversations table (danh sách cuộc hội thoại bot sẽ bỏ qua)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ignored_conversations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_key TEXT,
+        user_id TEXT, -- có thể liên kết gián tiếp qua session_key nếu cần
+        thread_id TEXT NOT NULL,
+        name TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(session_key, thread_id)
+      );
+    `);
+
     // Create staff table
     await client.query(`
       CREATE TABLE IF NOT EXISTS staff (
@@ -302,8 +336,7 @@ export async function migrate() {
         
         -- Permissions
         can_control_bot BOOLEAN DEFAULT false,
-        can_view_all_conversations BOOLEAN DEFAULT false,
-        can_manage_staff BOOLEAN DEFAULT false,
+        can_manage_orders BOOLEAN DEFAULT false,
         
         -- Liên kết với session (nếu cần)
         associated_session_keys TEXT[],
@@ -312,6 +345,31 @@ export async function migrate() {
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         is_active BOOLEAN DEFAULT true
       );
+    `);
+
+    // Ensure staff permission columns are up to date (idempotent)
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='staff' AND column_name='can_manage_orders'
+        ) THEN
+          ALTER TABLE staff ADD COLUMN can_manage_orders BOOLEAN DEFAULT false;
+        END IF;
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='staff' AND column_name='can_view_all_conversations'
+        ) THEN
+          ALTER TABLE staff DROP COLUMN can_view_all_conversations;
+        END IF;
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='staff' AND column_name='can_manage_staff'
+        ) THEN
+          ALTER TABLE staff DROP COLUMN can_manage_staff;
+        END IF;
+      END $$;
     `);
 
     // Create bot_logs table
@@ -426,6 +484,18 @@ export async function migrate() {
           SELECT 1 FROM pg_indexes WHERE tablename = 'conversations' AND indexname = 'idx_conversations_staff'
         ) THEN
           CREATE INDEX idx_conversations_staff ON conversations(assigned_staff_id) WHERE assigned_staff_id IS NOT NULL;
+        END IF;
+        
+        -- Ignored conversations indexes
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_indexes WHERE tablename = 'ignored_conversations' AND indexname = 'idx_ignored_conversations_session'
+        ) THEN
+          CREATE INDEX idx_ignored_conversations_session ON ignored_conversations(session_key, thread_id);
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_indexes WHERE tablename = 'ignored_conversations' AND indexname = 'idx_ignored_conversations_user'
+        ) THEN
+          CREATE INDEX idx_ignored_conversations_user ON ignored_conversations(session_key, user_id);
         END IF;
         
         -- Staff indexes

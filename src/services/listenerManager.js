@@ -1,9 +1,16 @@
 import { Zalo, ThreadType } from 'zca-js';
-import { listActiveSessions, setAccountIdBySessionKey, deleteSessionByKey } from '../repositories/session.repository.js';
-import { saveIncomingMessage } from '../repositories/message.repository.js';
+import { listActiveSessions, setAccountIdBySessionKey, deleteSessionByKey, getBySessionKey } from '../repositories/session.repository.js';
+import { saveIncomingMessage, markMessageReplied } from '../repositories/message.repository.js';
 import { acquireLock, releaseLock } from '../utils/lock.js';
+import { chatWithDangbaiLinhKien, chatWithMobileChatbot } from '../utils/dangbaiClient.js';
+import { sendTextMessage, sendLink } from './sendMessage.service.js';
+import { detectLinks } from '../utils/messageUtils.js';
 
 const activeListeners = new Map(); // account_id -> { api, stop, session_key }
+const stopRequests = new Set(); // keys we explicitly asked to stop (no auto-restart)
+const authFailureFlags = new Set(); // keys that had auth failures (avoid auto-restart)
+
+ 
 
 function extractCookie(cookies_json) {
   if (!cookies_json) return null;
@@ -87,7 +94,7 @@ export async function startAllListeners() {
 
 export async function startListenerForSession(sessionRow) {
   try {
-    const { session_key, account_id, cookies_json, imei, user_agent, language } = sessionRow;
+    const { session_key, account_id, cookies_json, imei, user_agent, language, api_key } = sessionRow;
     const cookie = extractCookie(cookies_json);
     if (!cookie) {
       // avoid printing full cookie_json; print type and keys to debug shape
@@ -97,16 +104,28 @@ export async function startListenerForSession(sessionRow) {
     }
 
     const accKey = account_id || session_key;
+    
+    // Check if already running first, before acquiring lock
+    if (activeListeners.has(accKey)) {
+      console.log('[Listener] already running', accKey);
+      return;
+    }
+    
     const lockKey = `zalo:listener:account:${accKey}`;
     const locked = await acquireLock(lockKey, 30);
     if (!locked) {
       console.log('[Listener] lock busy skip', accKey);
+      // Only retry if we're not already running
+      if (!activeListeners.has(accKey)) {
+        setTimeout(() => startListenerForSession(sessionRow).catch(console.error), 3000);
+      }
       return;
     }
 
+    // Double-check after acquiring lock
     if (activeListeners.has(accKey)) {
       await releaseLock(lockKey);
-      console.log('[Listener] already running', accKey);
+      console.log('[Listener] already running after lock', accKey);
       return;
     }
 
@@ -167,6 +186,17 @@ export async function startListenerForSession(sessionRow) {
     api.listener.on('message', async (message) => {
     try {
       const d = message?.data || {};
+      // // DEBUG: Log full raw message and data payload from Zalo
+      // try {
+      //   console.log('[DEBUG] Zalo raw message =', JSON.stringify(message, null, 2));
+      // } catch (_) {
+      //   console.log('[DEBUG] Zalo raw message (non-serializable) =', message);
+      // }
+      // try {
+      //   console.log('[DEBUG] Zalo raw data d =', JSON.stringify(d, null, 2));
+      // } catch (_) {
+      //   console.log('[DEBUG] Zalo raw data d (non-serializable) =', d);
+      // }
       const isText = typeof d.content === 'string';
       const isPhoto = d.msgType === 'chat.photo' && typeof d.content === 'object' && d.content !== null;
       
@@ -270,7 +300,7 @@ export async function startListenerForSession(sessionRow) {
 
       await saveIncomingMessage({
         session_key,
-        account_id: accId || account_id,
+        account_id: isSelf ? (d.idTo || null) : (d.uidFrom || null),
         // New Zalo message fields
         type: d.type,
         thread_id: threadId,
@@ -286,7 +316,7 @@ export async function startListenerForSession(sessionRow) {
         mentions: d.mentions,
         attachments_json: message?.data?.attachments || null,
         ts: d.ts,
-        msg_id: d.msgId,
+        msg_id: msgId,
         cli_msg_id: d.cliMsgId,
         global_msg_id: d.globalMsgId,
         real_msg_id: d.realMsgId,
@@ -312,7 +342,122 @@ export async function startListenerForSession(sessionRow) {
         to_uid: toUid ? String(toUid) : null,
       });
 
-      // No outbound POST. Dangbai will fetch via GET /api/messages
+      // Auto-reply: spawn a separate async task to call Dangbai chatbot backend
+      // Conditions: only for inbound text messages (not self messages)
+      if (!isSelf && isText && typeof content === 'string' && content.trim()) {
+        // Fire-and-forget; do not block listener loop
+        (async () => {
+          try {
+            // Fetch latest session row to avoid stale data (priority/api_key may change at runtime)
+            let latest = null;
+            try { latest = await getBySessionKey(session_key); } catch (_) { latest = null; }
+            const effectivePriority = (latest?.chatbot_priority || sessionRow?.chatbot_priority || 'mobile').toLowerCase();
+            const effectiveApiKey = latest?.api_key || api_key || undefined;
+
+            let resp = null;
+            if (effectivePriority === 'custom') {
+              // Call custom chatbot (linhkien)
+              resp = await chatWithDangbaiLinhKien({
+                message: content,
+                model_choice: 'gemini',
+                session_id: threadId,
+                apiKey: effectiveApiKey,
+              });
+            } else {
+              // Default or 'mobile' -> call mobile chatbot
+              resp = await chatWithMobileChatbot({
+                query: content,
+                stream: false,
+                llm_provider: 'google_genai',
+                apiKey: effectiveApiKey,
+              });
+            }
+
+             if (!resp) return;
+
+            // Extract text to reply from various possible response shapes
+            let replyMsg = null;
+            if (typeof resp === 'string') {
+              replyMsg = resp.trim();
+            } else if (typeof resp?.reply === 'string') {
+              replyMsg = resp.reply.trim();
+            } else if (typeof resp?.data?.answer === 'string') {
+              replyMsg = resp.data.answer.trim();
+            } else if (typeof resp?.message === 'string') {
+              replyMsg = resp.message.trim();
+            } else if (typeof resp?.response === 'string') {
+              // Mobile chatbot response shape
+              replyMsg = resp.response.trim();
+            } else if (typeof resp?.text === 'string') {
+              replyMsg = resp.text.trim();
+            } else if (resp && typeof resp === 'object') {
+              try {
+                const s = JSON.stringify(resp);
+                replyMsg = s.length > 1800 ? s.slice(0, 1800) + '…' : s;
+              } catch (_) { /* ignore */ }
+            }
+
+            if (!replyMsg) return;
+            // Limit message length to avoid platform limits
+            if (replyMsg.length > 2000) replyMsg = replyMsg.slice(0, 2000);
+
+            let sendRes = null;
+            
+            // Prefer structured images from response if provided
+            const images = Array.isArray(resp?.images) ? resp.images : [];
+            if (images.length > 0) {
+              // Send the reply text first (once), but strip any links from it
+              if (replyMsg) {
+                const { textWithoutLinks } = detectLinks(replyMsg);
+                if (textWithoutLinks) {
+                  sendRes = await sendTextMessage({ api, threadId, msg: textWithoutLinks, type: threadType });
+                }
+              }
+              for (const img of images) {
+                try {
+                  const linkUrl = img?.image_url || img?.url || '';
+                  if (!linkUrl) continue;
+                  const caption = [img?.product_name, img?.product_link].filter(Boolean).join('\n');
+                  const linkRes = await sendLink({
+                    api,
+                    threadId,
+                    link: String(linkUrl),
+                    msg: caption || undefined,
+                    type: threadType,
+                  });
+                  if (linkRes) sendRes = linkRes;
+                } catch (e) {
+                  console.warn('[Listener] send image link failed:', e?.message || String(e));
+                }
+              }
+            } else {
+              // Fallback: detect links in plain reply text, else send as text
+              const { hasLinks, links, textWithoutLinks } = detectLinks(replyMsg);
+              if (hasLinks && links.length > 0) {
+                // Send the cleaned text first (if exists), then send each link separately
+                if (textWithoutLinks && textWithoutLinks.length > 0) {
+                  try {
+                    const textRes = await sendTextMessage({ api, threadId, msg: textWithoutLinks, type: threadType });
+                    if (textRes) sendRes = textRes;
+                  } catch (_) { /* ignore */ }
+                }
+                for (const link of links) {
+                  try {
+                    const linkRes = await sendLink({ api, threadId, link: link, type: threadType });
+                    if (linkRes) sendRes = linkRes;
+                  } catch (_) { /* ignore */ }
+                }
+              } else {
+                sendRes = await sendTextMessage({ api, threadId, msg: replyMsg, type: threadType });
+              }
+            }
+            
+            if (sendRes) { await markMessageReplied(session_key, msgId); }
+          } catch (e) {
+            console.error('[Listener] auto-reply error', e.message || e);
+          }
+        })();
+      }
     } catch (err) {
       console.error('[Listener] handle message error', err.message || err);
     }
@@ -322,13 +467,56 @@ export async function startListenerForSession(sessionRow) {
       console.warn('[Listener] stopped', accKey);
       activeListeners.delete(accKey);
       await releaseLock(lockKey);
+      // If this stop was explicitly requested (e.g., logout), do NOT auto-restart
+      if (stopRequests.has(String(accKey))) {
+        stopRequests.delete(String(accKey));
+        return;
+      }
+      // If this stop follows an auth failure, do NOT auto-restart
+      if (authFailureFlags.has(String(accKey)) || authFailureFlags.has(String(session_key))) {
+        try { authFailureFlags.delete(String(accKey)); } catch {}
+        try { authFailureFlags.delete(String(session_key)); } catch {}
+        return;
+      }
       setTimeout(() => startListenerForSession(sessionRow).catch(console.error), 5000);
     });
 
     // Add global error handler for the listener
-    api.listener.on('error', (error) => {
-      console.error('[Listener] Listener error for', accKey, ':', error.message || error);
-      // Don't crash the entire process, just log the error
+    api.listener.on('error', async (error) => {
+      const errMsg = error?.message || String(error || '');
+      console.error('[Listener] Listener error for', accKey, ':', errMsg);
+      // Detect authentication / session-expired type errors
+      const isAuthFailure = typeof errMsg === 'string' && (
+        errMsg.toLowerCase().includes('auth') ||
+        errMsg.toLowerCase().includes('unauthorized') ||
+        errMsg.toLowerCase().includes('forbidden') ||
+        errMsg.toLowerCase().includes('invalid') ||
+        errMsg.toLowerCase().includes('expired') ||
+        errMsg.includes('Đăng nhập thất bại') ||
+        errMsg.includes('Cookie not in this host') ||
+        errMsg.toLowerCase().includes('token') ||
+        errMsg.toLowerCase().includes('domain')
+      );
+
+      if (isAuthFailure) {
+        console.warn('[Listener] auth error detected during run; deactivating session and stopping listener:', session_key);
+        // Mark flags so 'stop' handler does not auto-restart
+        try { authFailureFlags.add(String(accKey)); } catch {}
+        try { authFailureFlags.add(String(session_key)); } catch {}
+        try { stopRequests.add(String(accKey)); } catch {}
+        try { stopRequests.add(String(session_key)); } catch {}
+        // Deactivate session in DB so it won't be started again
+        try {
+          await deleteSessionByKey(session_key);
+          console.log('[Listener] session deactivated due to runtime auth failure:', session_key);
+        } catch (e) {
+          console.error('[Listener] failed to deactivate session on runtime auth failure:', session_key, e?.message || e);
+        }
+        // Stop listener and release lock; 'stop' handler will clean up
+        try { api.listener.stop(); } catch {}
+        try { await releaseLock(lockKey); } catch {}
+      }
+      // For non-auth errors, just log; we rely on the internal listener to keep running
     });
 
     api.listener.start();
@@ -353,8 +541,22 @@ export function listRunning() {
 export async function stopListener(accountIdOrSessionKey) {
   const h = activeListeners.get(accountIdOrSessionKey);
   if (h) {
+    // Mark this key (and the paired session key if present) to prevent auto-restart
+    try { stopRequests.add(String(accountIdOrSessionKey)); } catch {}
+    if (h && h.session_key) {
+      try { stopRequests.add(String(h.session_key)); } catch {}
+    }
     try { h.stop(); } catch {}
     activeListeners.delete(accountIdOrSessionKey);
+  }
+  // Wait a moment for the listener to fully stop before releasing locks
+  await new Promise(r => setTimeout(r, 500));
+
+  // Always release lock(s) so a fresh start isn't blocked
+  try { await releaseLock(`zalo:listener:account:${accountIdOrSessionKey}`); } catch {}
+  // Also try to release by the paired identifier if we have it
+  if (h && h.session_key) {
+    try { await releaseLock(`zalo:listener:account:${h.session_key}`); } catch {}
   }
 }
 
