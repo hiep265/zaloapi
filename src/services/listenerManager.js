@@ -520,7 +520,57 @@ export async function startListenerForSession(sessionRow) {
     });
 
     api.listener.start();
-    activeListeners.set(accKey, { api, stop: () => api.listener.stop(), session_key });
+
+    // Proactive health check to detect silent session expiry
+    const healthCheckInterval = setInterval(async () => {
+      console.log(`[Listener] Running health check for ${accKey}...`);
+      try {
+        // Use setStatus() as the most reliable check. It's a 'write' action that is unlikely to be cached.
+        const statusMsg = `Health check at ${new Date().toISOString()}`;
+        await api.setStatus(statusMsg);
+        console.log(`[Listener] Health check PASSED for ${accKey}.`);
+      } catch (healthError) {
+        // Log the full error object to diagnose why auth failures are not being caught.
+        console.error('[Listener] Health check FAILED. Full error object:', healthError);
+
+        const errMsg = healthError?.message || String(healthError || '');
+        const isAuthFailure = typeof errMsg === 'string' && (
+          errMsg.toLowerCase().includes('auth') ||
+          errMsg.toLowerCase().includes('unauthorized') ||
+          errMsg.toLowerCase().includes('forbidden') ||
+          errMsg.toLowerCase().includes('invalid') ||
+          errMsg.toLowerCase().includes('expired') ||
+          errMsg.includes('Đăng nhập thất bại') ||
+          errMsg.includes('Cookie not in this host') ||
+          errMsg.toLowerCase().includes('token') ||
+          errMsg.toLowerCase().includes('domain')
+        );
+
+        if (isAuthFailure) {
+          console.warn('[Listener] Health check failed, auth error detected; deactivating session:', session_key);
+          // Mark flags to prevent auto-restart
+          try { authFailureFlags.add(String(accKey)); } catch {}
+          try { authFailureFlags.add(String(session_key)); } catch {}
+          // Deactivate session in DB
+          try {
+            await deleteSessionByKey(session_key);
+            console.log('[Listener] Session deactivated due to health check failure:', session_key);
+          } catch (e) {
+            console.error('[Listener] Failed to deactivate session on health check failure:', session_key, e?.message || e);
+          }
+          // Stop the listener and clean up
+          if (activeListeners.has(accKey)) {
+            const h = activeListeners.get(accKey);
+            if (h && h.healthCheckId) {
+              clearInterval(h.healthCheckId);
+            }
+            try { h.stop(); } catch {}
+          }
+        }
+      }
+    }, 30000); // Check every 30 seconds
+
+    activeListeners.set(accKey, { api, stop: () => api.listener.stop(), session_key, healthCheckId: healthCheckInterval });
     console.log('[Listener] started', accKey);
   } catch (error) {
     console.error('[Listener] Failed to start listener for session', sessionRow?.session_key, ':', error.message || error);
@@ -541,6 +591,10 @@ export function listRunning() {
 export async function stopListener(accountIdOrSessionKey) {
   const h = activeListeners.get(accountIdOrSessionKey);
   if (h) {
+    // Clear health check first
+    if (h.healthCheckId) {
+      clearInterval(h.healthCheckId);
+    }
     // Mark this key (and the paired session key if present) to prevent auto-restart
     try { stopRequests.add(String(accountIdOrSessionKey)); } catch {}
     if (h && h.session_key) {
