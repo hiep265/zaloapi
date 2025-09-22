@@ -571,7 +571,7 @@ export async function startListenerForSession(sessionRow) {
           }
         }
       }
-    }, 30000); // Check every 30 seconds
+    }, 300000); // Check every 30 seconds
 
     activeListeners.set(accKey, { api, stop: () => api.listener.stop(), session_key, healthCheckId: healthCheckInterval });
     console.log('[Listener] started', accKey);
