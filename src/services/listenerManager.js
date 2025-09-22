@@ -525,10 +525,13 @@ export async function startListenerForSession(sessionRow) {
     const healthCheckInterval = setInterval(async () => {
       console.log(`[Listener] Running health check for ${accKey}...`);
       try {
-        // Use setStatus() as the most reliable check. It's a 'write' action that is unlikely to be cached.
-        const statusMsg = `Health check at ${new Date().toISOString()}`;
-        await api.setStatus(statusMsg);
-        console.log(`[Listener] Health check PASSED for ${accKey}.`);
+        // Use getOwnId() as a reliable check to verify session is still valid
+        const ownId = await api.getOwnId();
+        if (ownId) {
+          console.log(`[Listener] Health check PASSED for ${accKey}.`);
+        } else {
+          throw new Error('getOwnId returned null/undefined');
+        }
       } catch (healthError) {
         // Log the full error object to diagnose why auth failures are not being caught.
         console.error('[Listener] Health check FAILED. Full error object:', healthError);
