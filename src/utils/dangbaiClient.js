@@ -73,10 +73,10 @@ export async function chatWithDangbaiLinhKien({ message, model_choice = 'gemini'
 /**
  * Call Dangbai backend mobile chatbot API
  * Endpoint: POST /api/v1/chatbot/chat
- * Body: { query: string, stream?: boolean, llm_provider?: 'google_genai' | 'openai' }
+ * Body: { query: string, stream?: boolean, llm_provider?: 'google_genai' | 'openai', thread_id?: string }
  * Auth: X-API-Key header (user's API key saved with the session)
  */
-export async function chatWithMobileChatbot({ query, stream = false, llm_provider = 'google_genai', apiKey }) {
+export async function chatWithMobileChatbot({ query, stream = false, llm_provider = 'google_genai', apiKey, thread_id }) {
   const url = `${DANGBAI_BASE_URL}/api/v1/chatbot/chat`;
   const controller = new AbortController();
   let timeoutId = null;
@@ -92,7 +92,7 @@ export async function chatWithMobileChatbot({ query, stream = false, llm_provide
     const res = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ query: String(query || ''), stream: Boolean(stream), llm_provider }),
+      body: JSON.stringify({ query: String(query || ''), stream: Boolean(stream), llm_provider, thread_id }),
       signal: controller.signal,
     });
     if (!res.ok) {
