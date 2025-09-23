@@ -221,40 +221,6 @@ export async function startListenerForSession(sessionRow) {
           hasContent: typeof d.content,
           keys: Object.keys(d || {}),
         });
-
-    // Lắng nghe sự kiện WebSocket bị ngắt kết nối để thu thập code/reason chi tiết
-    api.listener.on('disconnected', async (code, reason) => {
-      // Các mã thường gặp từ zca-js: 3000 (DuplicateConnection), 3003 (KickConnection)
-      console.warn('[Listener] disconnected', accKey, 'code=', code, 'reason=', reason);
-    });
-
-    // Khi socket đóng hẳn: xử lý như stop, và nếu là Kick/Duplicate coi như mất phiên đăng nhập
-    api.listener.on('closed', async (code, reason) => {
-      console.warn('[Listener] closed', accKey, 'code=', code, 'reason=', reason);
-      const h = activeListeners.get(accKey);
-      if (h?.healthCheckId) { try { clearInterval(h.healthCheckId); } catch {} }
-      if (h?.lockRenewId) { try { clearInterval(h.lockRenewId); } catch {} }
-      activeListeners.delete(accKey);
-      try { await releaseLock(lockKey); } catch {}
-
-      // Nếu đây là đóng do đăng nhập nơi khác hoặc kết nối trùng lặp ⇒ vô hiệu hóa session
-      const isKickOrDuplicate = Number(code) === 3003 || Number(code) === 3000;
-      if (isKickOrDuplicate) {
-        try {
-          await deleteSessionByKey(session_key);
-          console.log('[Listener] session deactivated due to closed code', code, 'session=', session_key);
-        } catch (e) {
-          console.error('[Listener] failed to deactivate session on closed:', session_key, e?.message || e);
-        }
-        return;
-      }
-      // Nếu có yêu cầu dừng chủ động, không làm gì thêm
-      if (stopRequests.has(String(accKey))) {
-        try { stopRequests.delete(String(accKey)); } catch {}
-        return;
-      }
-      // Mặc định: không auto-restart; yêu cầu đăng nhập lại nếu cần
-    });
         return;
       }
 
@@ -516,7 +482,6 @@ export async function startListenerForSession(sessionRow) {
       console.warn('[Listener] stopped', accKey);
       const h = activeListeners.get(accKey);
       // Clear timers
-      if (h?.healthCheckId) { try { clearInterval(h.healthCheckId); } catch {} }
       if (h?.lockRenewId) { try { clearInterval(h.lockRenewId); } catch {} }
       activeListeners.delete(accKey);
       await releaseLock(lockKey);
@@ -587,70 +552,54 @@ export async function startListenerForSession(sessionRow) {
       // For non-auth errors, just log; we rely on the internal listener to keep running
     });
 
-    api.listener.start();
-
-    // Proactive health check to detect silent session expiry
-    const healthCheckInterval = setInterval(async () => {
-      console.log(`[Listener] Running health check for ${accKey}...`);
-      try {
-        // Dùng API có gọi mạng để xác thực phiên thật sự còn sống (getOwnId chỉ trả về uid cache)
-        // keepAlive là nhẹ và phù hợp để kiểm tra phiên.
-        if (typeof api.keepAlive === 'function') {
-          await api.keepAlive();
-        } else if (typeof api.getContext === 'function') {
-          await api.getContext();
-        } else if (typeof api.fetchAccountInfo === 'function') {
-          await api.fetchAccountInfo();
-        } else {
-          // Fallback cuối: gọi getOwnId nhưng không đảm bảo phát hiện hết hạn
-          const ownId = await api.getOwnId();
-          if (!ownId) throw new Error('ownId missing');
-        }
-        console.log(`[Listener] Health check PASSED for ${accKey}.`);
-      } catch (healthError) {
-        // Ghi log đầy đủ để chuẩn đoán nguyên nhân lỗi khi kiểm tra sức khỏe (health check)
-        console.error('[Listener] Health check FAILED. Full error object:', healthError);
-
-        const errMsg = healthError?.message || String(healthError || '');
-        // PHÁT HIỆN LỖI XÁC THỰC QUA HEALTH CHECK
-        // - Nếu getOwnId() thất bại với các từ khóa dưới đây, hiểu là session đã hết hạn
-        //   hoặc bị đăng nhập từ nơi khác → cần vô hiệu hóa session và dừng listener.
-        const isAuthFailure = typeof errMsg === 'string' && (
-          errMsg.toLowerCase().includes('auth') ||
-          errMsg.toLowerCase().includes('unauthorized') ||
-          errMsg.toLowerCase().includes('forbidden') ||
-          errMsg.toLowerCase().includes('invalid') ||
-          errMsg.toLowerCase().includes('expired') ||
-          errMsg.includes('Đăng nhập thất bại') ||
-          errMsg.includes('Cookie not in this host') ||
-          errMsg.toLowerCase().includes('token') ||
-          errMsg.toLowerCase().includes('domain')
-        );
-
-        if (isAuthFailure) {
-          console.warn('[Listener] Health check failed, auth error detected; deactivating session:', session_key);
-          // Hành động: đánh dấu session không còn active để yêu cầu đăng nhập lại
-          // Mark flags to prevent auto-restart
-          try { authFailureFlags.add(String(accKey)); } catch {}
-          try { authFailureFlags.add(String(session_key)); } catch {}
-          // Deactivate session in DB
-          try {
-            await deleteSessionByKey(session_key);
-            console.log('[Listener] Session deactivated due to health check failure:', session_key);
-          } catch (e) {
-            console.error('[Listener] Failed to deactivate session on health check failure:', session_key, e?.message || e);
-          }
-          // Stop the listener and clean up
-          if (activeListeners.has(accKey)) {
-            const h = activeListeners.get(accKey);
-            if (h && h.healthCheckId) {
-              clearInterval(h.healthCheckId);
-            }
-            try { h.stop(); } catch {}
-          }
+    // Lắng nghe sự kiện WebSocket bị ngắt kết nối để thu thập code/reason chi tiết (global scope)
+    api.listener.on('disconnected', async (code, reason) => {
+      // Các mã thường gặp từ zca-js: 3000 (DuplicateConnection), 3003 (KickConnection)
+      console.warn('[Listener] disconnected', accKey, 'code=', code, 'reason=', reason);
+      // Nếu phát hiện Disconnect do đăng nhập nơi khác/kết nối trùng lặp, xử lý ngay tương tự 'closed'
+      const isKickOrDuplicate = Number(code) === 3003 || Number(code) === 3000;
+      if (isKickOrDuplicate) {
+        const h = activeListeners.get(accKey);
+        if (h?.lockRenewId) { try { clearInterval(h.lockRenewId); } catch {} }
+        activeListeners.delete(accKey);
+        try { await releaseLock(lockKey); } catch {}
+        try {
+          await deleteSessionByKey(session_key);
+          console.log('[Listener] session deactivated due to disconnected code', code, 'session=', session_key);
+        } catch (e) {
+          console.error('[Listener] failed to deactivate session on disconnected:', session_key, e?.message || e);
         }
       }
-    }, 30000); // Kiểm tra sức khỏe mỗi 5 phút
+    });
+
+    // Khi socket đóng hẳn: xử lý như stop, và nếu là Kick/Duplicate coi như mất phiên đăng nhập (global scope)
+    api.listener.on('closed', async (code, reason) => {
+      console.warn('[Listener] closed', accKey, 'code=', code, 'reason=', reason);
+      const h = activeListeners.get(accKey);
+      if (h?.lockRenewId) { try { clearInterval(h.lockRenewId); } catch {} }
+      activeListeners.delete(accKey);
+      try { await releaseLock(lockKey); } catch {}
+
+      // Nếu đây là đóng do đăng nhập nơi khác hoặc kết nối trùng lặp ⇒ vô hiệu hóa session
+      const isKickOrDuplicate = Number(code) === 3003 || Number(code) === 3000;
+      if (isKickOrDuplicate) {
+        try {
+          await deleteSessionByKey(session_key);
+          console.log('[Listener] session deactivated due to closed code', code, 'session=', session_key);
+        } catch (e) {
+          console.error('[Listener] failed to deactivate session on closed:', session_key, e?.message || e);
+        }
+        return;
+      }
+      // Nếu có yêu cầu dừng chủ động, không làm gì thêm
+      if (stopRequests.has(String(accKey))) {
+        try { stopRequests.delete(String(accKey)); } catch {}
+        return;
+      }
+      // Mặc định: không auto-restart; yêu cầu đăng nhập lại nếu cần
+    });
+
+    api.listener.start();
 
     // Periodically renew the multi-layer lock to keep it alive while listener is running
     const lockRenewInterval = setInterval(async () => {
@@ -663,9 +612,9 @@ export async function startListenerForSession(sessionRow) {
       } catch (e) {
         console.warn('[Listener] lock renew error:', e?.message || e);
       }
-    }, 2000); // renew every 20s (less than TTL)
+    }, 5000); // renew every 20s (less than TTL)
 
-    activeListeners.set(accKey, { api, stop: () => api.listener.stop(), session_key, healthCheckId: healthCheckInterval, lockRenewId: lockRenewInterval });
+    activeListeners.set(accKey, { api, stop: () => api.listener.stop(), session_key, lockRenewId: lockRenewInterval });
     console.log('[Listener] started', accKey);
   } catch (error) {
     console.error('[Listener] Failed to start listener for session', sessionRow?.session_key, ':', error.message || error);
@@ -686,10 +635,7 @@ export function listRunning() {
 export async function stopListener(accountIdOrSessionKey) {
   const h = activeListeners.get(accountIdOrSessionKey);
   if (h) {
-    // Clear health check first
-    if (h.healthCheckId) {
-      clearInterval(h.healthCheckId);
-    }
+    // Clear timers
     if (h.lockRenewId) {
       clearInterval(h.lockRenewId);
     }
