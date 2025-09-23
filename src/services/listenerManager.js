@@ -5,6 +5,7 @@ import { acquireLock, releaseLock, renewLock } from '../utils/lock.js';
 import { chatWithDangbaiLinhKien, chatWithMobileChatbot } from '../utils/dangbaiClient.js';
 import { sendTextMessage, sendLink } from './sendMessage.service.js';
 import { detectLinks } from '../utils/messageUtils.js';
+import { list as listIgnored } from '../repositories/ignoredConversations.repository.js';
 
 const activeListeners = new Map(); // account_id -> { api, stop, session_key }
 const stopRequests = new Set(); // keys we explicitly asked to stop (no auto-restart)
@@ -367,6 +368,23 @@ export async function startListenerForSession(sessionRow) {
             try { latest = await getBySessionKey(session_key); } catch (_) { latest = null; }
             const effectivePriority = (latest?.chatbot_priority || sessionRow?.chatbot_priority || 'mobile').toLowerCase();
             const effectiveApiKey = latest?.api_key || api_key || undefined;
+
+            // Pre-check: skip auto-reply if this thread is in user's ignored conversations
+            try {
+              const ignoreRows = await listIgnored({
+                session_key,
+                thread_id: String(threadId || ''),
+                user_id: latest?.user_id || undefined,
+                limit: 1,
+                offset: 0,
+              });
+              if (Array.isArray(ignoreRows) && ignoreRows.length > 0) {
+                console.log('[Listener] thread is ignored; skip auto-reply', { session_key, threadId });
+                return;
+              }
+            } catch (ignErr) {
+              console.warn('[Listener] ignore-check failed:', ignErr?.message || ignErr);
+            }
 
             let resp = null;
             if (effectivePriority === 'custom') {
