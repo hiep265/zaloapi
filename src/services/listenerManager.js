@@ -1,7 +1,7 @@
 import { Zalo, ThreadType } from 'zca-js';
 import { listActiveSessions, setAccountIdBySessionKey, deleteSessionByKey, getBySessionKey } from '../repositories/session.repository.js';
 import { saveIncomingMessage, markMessageReplied } from '../repositories/message.repository.js';
-import { acquireLock, releaseLock } from '../utils/lock.js';
+import { acquireLock, releaseLock, renewLock } from '../utils/lock.js';
 import { chatWithDangbaiLinhKien, chatWithMobileChatbot } from '../utils/dangbaiClient.js';
 import { sendTextMessage, sendLink } from './sendMessage.service.js';
 import { detectLinks } from '../utils/messageUtils.js';
@@ -9,8 +9,6 @@ import { detectLinks } from '../utils/messageUtils.js';
 const activeListeners = new Map(); // account_id -> { api, stop, session_key }
 const stopRequests = new Set(); // keys we explicitly asked to stop (no auto-restart)
 const authFailureFlags = new Set(); // keys that had auth failures (avoid auto-restart)
-
- 
 
 function extractCookie(cookies_json) {
   if (!cookies_json) return null;
@@ -112,7 +110,7 @@ export async function startListenerForSession(sessionRow) {
     }
     
     const lockKey = `zalo:listener:account:${accKey}`;
-    const locked = await acquireLock(lockKey, 30);
+    const locked = await acquireLock(lockKey, 60);
     if (!locked) {
       console.log('[Listener] lock busy skip', accKey);
       // Only retry if we're not already running
@@ -138,8 +136,23 @@ export async function startListenerForSession(sessionRow) {
     } catch (e) {
       const msg = e?.message || String(e);
       console.warn('[Listener] login error for', accKey, msg);
+      // DEBUG chi tiết: ghi lại toàn bộ object lỗi để xem thông tin Zalo/zcajs trả về
+      try {
+        console.error('[Listener][DEBUG] login error object =', e);
+        if (e && typeof e === 'object') {
+          const basic = { name: e.name, message: e.message, stack: e.stack, code: e.code, status: e.status };
+          console.error('[Listener][DEBUG] login error fields =', basic);
+          if (e.response) console.error('[Listener][DEBUG] login e.response =', e.response);
+          if (e.data) console.error('[Listener][DEBUG] login e.data =', e.data);
+          if (e.body) console.error('[Listener][DEBUG] login e.body =', e.body);
+          if (e.cause) console.error('[Listener][DEBUG] login e.cause =', e.cause);
+        }
+      } catch (_) {}
       
-      // Check if this is an authentication failure (user logged in elsewhere)
+      // PHÁT HIỆN LỖI XÁC THỰC NGAY SAU KHI LOGIN
+      // - Nếu người dùng đăng nhập Zalo ở nơi khác (Web/App) hoặc cookie/phiên đã hết hạn,
+      //   Zalo sẽ trả về thông báo chứa các từ khóa bên dưới.
+      // - Khi phát hiện lỗi dạng này: vô hiệu hóa (deactivate) session trong DB để tránh tự khởi động lại sai.
       const isAuthFailure = msg.includes('authentication') || 
                            msg.includes('unauthorized') || 
                            msg.includes('invalid') ||
@@ -152,6 +165,7 @@ export async function startListenerForSession(sessionRow) {
       
       if (isAuthFailure) {
         console.warn('[Listener] authentication failure detected, deactivating session:', session_key);
+        // Hành động: đặt sessions.is_active=false để ngăn start lại cho đến khi người dùng đăng nhập lại.
         try {
           await deleteSessionByKey(session_key);
           console.log('[Listener] session deactivated due to auth failure:', session_key);
@@ -207,6 +221,40 @@ export async function startListenerForSession(sessionRow) {
           hasContent: typeof d.content,
           keys: Object.keys(d || {}),
         });
+
+    // Lắng nghe sự kiện WebSocket bị ngắt kết nối để thu thập code/reason chi tiết
+    api.listener.on('disconnected', async (code, reason) => {
+      // Các mã thường gặp từ zca-js: 3000 (DuplicateConnection), 3003 (KickConnection)
+      console.warn('[Listener] disconnected', accKey, 'code=', code, 'reason=', reason);
+    });
+
+    // Khi socket đóng hẳn: xử lý như stop, và nếu là Kick/Duplicate coi như mất phiên đăng nhập
+    api.listener.on('closed', async (code, reason) => {
+      console.warn('[Listener] closed', accKey, 'code=', code, 'reason=', reason);
+      const h = activeListeners.get(accKey);
+      if (h?.healthCheckId) { try { clearInterval(h.healthCheckId); } catch {} }
+      if (h?.lockRenewId) { try { clearInterval(h.lockRenewId); } catch {} }
+      activeListeners.delete(accKey);
+      try { await releaseLock(lockKey); } catch {}
+
+      // Nếu đây là đóng do đăng nhập nơi khác hoặc kết nối trùng lặp ⇒ vô hiệu hóa session
+      const isKickOrDuplicate = Number(code) === 3003 || Number(code) === 3000;
+      if (isKickOrDuplicate) {
+        try {
+          await deleteSessionByKey(session_key);
+          console.log('[Listener] session deactivated due to closed code', code, 'session=', session_key);
+        } catch (e) {
+          console.error('[Listener] failed to deactivate session on closed:', session_key, e?.message || e);
+        }
+        return;
+      }
+      // Nếu có yêu cầu dừng chủ động, không làm gì thêm
+      if (stopRequests.has(String(accKey))) {
+        try { stopRequests.delete(String(accKey)); } catch {}
+        return;
+      }
+      // Mặc định: không auto-restart; yêu cầu đăng nhập lại nếu cần
+    });
         return;
       }
 
@@ -466,6 +514,10 @@ export async function startListenerForSession(sessionRow) {
 
     api.listener.on('stop', async () => {
       console.warn('[Listener] stopped', accKey);
+      const h = activeListeners.get(accKey);
+      // Clear timers
+      if (h?.healthCheckId) { try { clearInterval(h.healthCheckId); } catch {} }
+      if (h?.lockRenewId) { try { clearInterval(h.lockRenewId); } catch {} }
       activeListeners.delete(accKey);
       await releaseLock(lockKey);
       // If this stop was explicitly requested (e.g., logout), do NOT auto-restart
@@ -473,20 +525,35 @@ export async function startListenerForSession(sessionRow) {
         stopRequests.delete(String(accKey));
         return;
       }
-      // If this stop follows an auth failure, do NOT auto-restart
-      if (authFailureFlags.has(String(accKey)) || authFailureFlags.has(String(session_key))) {
-        try { authFailureFlags.delete(String(accKey)); } catch {}
-        try { authFailureFlags.delete(String(session_key)); } catch {}
-        return;
+      // Deactivate session on unexpected stop (likely due to user opening Zalo Web/App)
+      try {
+        await deleteSessionByKey(session_key);
+        console.log('[Listener] session deactivated due to stop event:', session_key);
+      } catch (e) {
+        console.error('[Listener] failed to deactivate session on stop:', session_key, e?.message || e);
       }
-      setTimeout(() => startListenerForSession(sessionRow).catch(console.error), 5000);
     });
 
     // Add global error handler for the listener
     api.listener.on('error', async (error) => {
       const errMsg = error?.message || String(error || '');
       console.error('[Listener] Listener error for', accKey, ':', errMsg);
-      // Detect authentication / session-expired type errors
+      // DEBUG chi tiết: ghi lại toàn bộ object lỗi runtime
+      try {
+        console.error('[Listener][DEBUG] runtime error object =', error);
+        if (error && typeof error === 'object') {
+          const basic = { name: error.name, message: error.message, stack: error.stack, code: error.code, status: error.status };
+          console.error('[Listener][DEBUG] runtime error fields =', basic);
+          if (error.response) console.error('[Listener][DEBUG] runtime error response =', error.response);
+          if (error.data) console.error('[Listener][DEBUG] runtime error data =', error.data);
+          if (error.body) console.error('[Listener][DEBUG] runtime error body =', error.body);
+          if (error.cause) console.error('[Listener][DEBUG] runtime error cause =', error.cause);
+        }
+      } catch (_) {}
+      // PHÁT HIỆN LỖI XÁC THỰC TRONG QUÁ TRÌNH ĐANG CHẠY
+      // - Trong lúc listener hoạt động, nếu session hết hạn/đăng nhập nơi khác,
+      //   các lỗi thường chứa các từ khóa bên dưới.
+      // - Khi gặp lỗi auth: vô hiệu hóa session và dừng listener, KHÔNG tự khởi động lại.
       const isAuthFailure = typeof errMsg === 'string' && (
         errMsg.toLowerCase().includes('auth') ||
         errMsg.toLowerCase().includes('unauthorized') ||
@@ -526,18 +593,28 @@ export async function startListenerForSession(sessionRow) {
     const healthCheckInterval = setInterval(async () => {
       console.log(`[Listener] Running health check for ${accKey}...`);
       try {
-        // Use getOwnId() as a reliable check to verify session is still valid
-        const ownId = await api.getOwnId();
-        if (ownId) {
-          console.log(`[Listener] Health check PASSED for ${accKey}.`);
+        // Dùng API có gọi mạng để xác thực phiên thật sự còn sống (getOwnId chỉ trả về uid cache)
+        // keepAlive là nhẹ và phù hợp để kiểm tra phiên.
+        if (typeof api.keepAlive === 'function') {
+          await api.keepAlive();
+        } else if (typeof api.getContext === 'function') {
+          await api.getContext();
+        } else if (typeof api.fetchAccountInfo === 'function') {
+          await api.fetchAccountInfo();
         } else {
-          throw new Error('getOwnId returned null/undefined');
+          // Fallback cuối: gọi getOwnId nhưng không đảm bảo phát hiện hết hạn
+          const ownId = await api.getOwnId();
+          if (!ownId) throw new Error('ownId missing');
         }
+        console.log(`[Listener] Health check PASSED for ${accKey}.`);
       } catch (healthError) {
-        // Log the full error object to diagnose why auth failures are not being caught.
+        // Ghi log đầy đủ để chuẩn đoán nguyên nhân lỗi khi kiểm tra sức khỏe (health check)
         console.error('[Listener] Health check FAILED. Full error object:', healthError);
 
         const errMsg = healthError?.message || String(healthError || '');
+        // PHÁT HIỆN LỖI XÁC THỰC QUA HEALTH CHECK
+        // - Nếu getOwnId() thất bại với các từ khóa dưới đây, hiểu là session đã hết hạn
+        //   hoặc bị đăng nhập từ nơi khác → cần vô hiệu hóa session và dừng listener.
         const isAuthFailure = typeof errMsg === 'string' && (
           errMsg.toLowerCase().includes('auth') ||
           errMsg.toLowerCase().includes('unauthorized') ||
@@ -552,6 +629,7 @@ export async function startListenerForSession(sessionRow) {
 
         if (isAuthFailure) {
           console.warn('[Listener] Health check failed, auth error detected; deactivating session:', session_key);
+          // Hành động: đánh dấu session không còn active để yêu cầu đăng nhập lại
           // Mark flags to prevent auto-restart
           try { authFailureFlags.add(String(accKey)); } catch {}
           try { authFailureFlags.add(String(session_key)); } catch {}
@@ -572,9 +650,22 @@ export async function startListenerForSession(sessionRow) {
           }
         }
       }
-    }, 300000); // Check every 30 seconds
+    }, 30000); // Kiểm tra sức khỏe mỗi 5 phút
 
-    activeListeners.set(accKey, { api, stop: () => api.listener.stop(), session_key, healthCheckId: healthCheckInterval });
+    // Periodically renew the multi-layer lock to keep it alive while listener is running
+    const lockRenewInterval = setInterval(async () => {
+      try {
+        const ok = await renewLock(lockKey, 60);
+        if (!ok) {
+          console.warn('[Listener] lock renew failed, stopping listener to avoid duplicates', accKey);
+          try { api.listener.stop(); } catch {}
+        }
+      } catch (e) {
+        console.warn('[Listener] lock renew error:', e?.message || e);
+      }
+    }, 2000); // renew every 20s (less than TTL)
+
+    activeListeners.set(accKey, { api, stop: () => api.listener.stop(), session_key, healthCheckId: healthCheckInterval, lockRenewId: lockRenewInterval });
     console.log('[Listener] started', accKey);
   } catch (error) {
     console.error('[Listener] Failed to start listener for session', sessionRow?.session_key, ':', error.message || error);
@@ -598,6 +689,9 @@ export async function stopListener(accountIdOrSessionKey) {
     // Clear health check first
     if (h.healthCheckId) {
       clearInterval(h.healthCheckId);
+    }
+    if (h.lockRenewId) {
+      clearInterval(h.lockRenewId);
     }
     // Mark this key (and the paired session key if present) to prevent auto-restart
     try { stopRequests.add(String(accountIdOrSessionKey)); } catch {}
