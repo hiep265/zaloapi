@@ -6,10 +6,31 @@ import { chatWithDangbaiLinhKien, chatWithMobileChatbot } from '../utils/dangbai
 import { sendTextMessage, sendLink } from './sendMessage.service.js';
 import { detectLinks } from '../utils/messageUtils.js';
 import { list as listIgnored } from '../repositories/ignoredConversations.repository.js';
+import { getByZaloUid as getStaffByZaloUid } from '../repositories/staff.repository.js';
+import { getBySessionKey as getBotConfigBySessionKey } from '../repositories/botConfig.repository.js';
 
 const activeListeners = new Map(); // account_id -> { api, stop, session_key }
 const stopRequests = new Set(); // keys we explicitly asked to stop (no auto-restart)
 const authFailureFlags = new Set(); // keys that had auth failures (avoid auto-restart)
+
+// Suppression map: per-thread auto-reply suppression when staff speaks
+const DEFAULT_SUPPRESS_MINUTES = 10; // Fallback if no bot_configs
+const threadSuppression = new Map(); // key = `${session_key}:${threadId}` => expiry timestamp (ms)
+
+async function getSuppressMs(session_key) {
+  try {
+    const cfg = await getBotConfigBySessionKey(String(session_key || ''));
+    // If no config found or missing stop_minutes -> default 10 minutes
+    if (!cfg || cfg.stop_minutes == null) {
+      return DEFAULT_SUPPRESS_MINUTES * 60 * 1000;
+    }
+    const minutes = Number(cfg.stop_minutes);
+    if (!Number.isFinite(minutes) || minutes <= 0) return DEFAULT_SUPPRESS_MINUTES * 60 * 1000;
+    return minutes * 60 * 1000;
+  } catch (_) {
+    return DEFAULT_SUPPRESS_MINUTES * 60 * 1000;
+  }
+}
 
 function extractCookie(cookies_json) {
   if (!cookies_json) return null;
@@ -360,6 +381,37 @@ export async function startListenerForSession(sessionRow) {
       // Auto-reply: spawn a separate async task to call Dangbai chatbot backend
       // Conditions: only for inbound text messages (not self messages)
       if (!isSelf && isText && typeof content === 'string' && content.trim()) {
+        // Pre-check 0: skip if this thread is currently suppressed due to staff activity
+        const threadKeyStr = String(threadId || '');
+        if (threadKeyStr) {
+          const suppressKey = `${session_key}:${threadKeyStr}`;
+          const now = Date.now();
+          const until = threadSuppression.get(suppressKey);
+          if (until && now < until) {
+            console.log('[Listener] thread suppressed; skip auto-reply', { session_key, threadId: threadKeyStr, until });
+            return;
+          }
+          if (until && now >= until) {
+            try { threadSuppression.delete(suppressKey); } catch {}
+          }
+        }
+
+        // Pre-check 1: if sender is a staff with role 'staff' => suppress this thread for 10 minutes and skip reply
+        try {
+          const staffRow = await getStaffByZaloUid(String(fromUid || ''));
+          if (staffRow && String(staffRow.role || '').toLowerCase() === 'staff') {
+            if (threadKeyStr) {
+              const suppressKey = `${session_key}:${threadKeyStr}`;
+              const ttl = await getSuppressMs(session_key);
+              threadSuppression.set(suppressKey, Date.now() + ttl);
+            }
+            console.log('[Listener] inbound from staff; suppress auto-replies', { session_key, threadId: threadKeyStr, fromUid });
+            return;
+          }
+        } catch (staffErr) {
+          console.warn('[Listener] staff-check failed:', staffErr?.message || staffErr);
+        }
+
         // Fire-and-forget; do not block listener loop
         (async () => {
           try {
@@ -385,6 +437,19 @@ export async function startListenerForSession(sessionRow) {
             } catch (ignErr) {
               console.warn('[Listener] ignore-check failed:', ignErr?.message || ignErr);
             }
+
+            // Re-check suppression inside worker to avoid race conditions
+            try {
+              const threadKeyStr = String(threadId || '');
+              if (threadKeyStr) {
+                const suppressKey = `${session_key}:${threadKeyStr}`;
+                const until = threadSuppression.get(suppressKey);
+                if (until && Date.now() < until) {
+                  console.log('[Listener] thread suppressed (worker); skip auto-reply', { session_key, threadId: threadKeyStr, until });
+                  return;
+                }
+              }
+            } catch (_) { /* ignore */ }
 
             let resp = null;
             if (effectivePriority === 'custom') {
