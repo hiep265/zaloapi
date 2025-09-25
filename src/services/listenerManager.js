@@ -17,6 +17,26 @@ const authFailureFlags = new Set(); // keys that had auth failures (avoid auto-r
 const DEFAULT_SUPPRESS_MINUTES = 10; // Fallback if no bot_configs
 const threadSuppression = new Map(); // key = `${session_key}:${threadId}` => expiry timestamp (ms)
 
+// Self-message tracking: detect user vs bot messages
+const lastBotReplyTime = new Map(); // key = `${session_key}:${threadId}` => timestamp
+const SELF_MESSAGE_GRACE_PERIOD = 3000; // 3 seconds - if self message appears within this time after bot reply, consider it from bot
+
+// Periodic cleanup for lastBotReplyTime to prevent memory leak
+setInterval(() => {
+  const now = Date.now();
+  let cleanedCount = 0;
+  for (const [key, timestamp] of lastBotReplyTime.entries()) {
+    // Remove entries older than 2x grace period (6 seconds)
+    if (now - timestamp > SELF_MESSAGE_GRACE_PERIOD * 2) {
+      lastBotReplyTime.delete(key);
+      cleanedCount++;
+    }
+  }
+  if (cleanedCount > 0) {
+    console.log(`[Listener] Cleaned up ${cleanedCount} old bot reply entries. Current size: ${lastBotReplyTime.size}`);
+  }
+}, 5 * 60 * 1000); // Cleanup every 5 minutes
+
 async function getSuppressMs(session_key) {
   try {
     const cfg = await getBotConfigBySessionKey(String(session_key || ''));
@@ -378,6 +398,43 @@ export async function startListenerForSession(sessionRow) {
         to_uid: toUid ? String(toUid) : null,
       });
 
+      // Self-message suppression: if user sends message from their account (not via chatbot API)
+      // then suppress auto-replies in this thread for configured minutes
+      if (isSelf && isText && typeof content === 'string' && content.trim()) {
+        const threadKey = `${session_key}:${threadId}`;
+        const threadKeyStr = String(threadId || '');
+        const lastBotTime = lastBotReplyTime.get(threadKey);
+        const now = Date.now();
+        
+        // If no recent bot reply, or it's been too long since bot reply, 
+        // then this self message is likely from user (not bot API)
+        const isFromUser = !lastBotTime || (now - lastBotTime) > SELF_MESSAGE_GRACE_PERIOD;
+        
+        if (isFromUser && threadKeyStr) {
+          // Apply suppression like staff logic
+          const suppressKey = `${session_key}:${threadKeyStr}`;
+          const ttl = await getSuppressMs(session_key);
+          threadSuppression.set(suppressKey, Date.now() + ttl);
+          console.log('[Listener] self message from user; suppress auto-replies', { 
+            session_key, 
+            threadId: threadKeyStr,
+            suppressUntil: new Date(Date.now() + ttl).toISOString(),
+            timeSinceLastBot: lastBotTime ? (now - lastBotTime) : 'no-recent-bot-activity'
+          });
+        } else {
+          console.log('[Listener] self message likely from bot API; no suppression', {
+            session_key,
+            threadId: threadKeyStr,
+            timeSinceLastBot: lastBotTime ? (now - lastBotTime) : 'no-recent-bot-activity'
+          });
+        }
+        
+        // Cleanup old bot reply entries if needed
+        if (lastBotTime && (now - lastBotTime) > SELF_MESSAGE_GRACE_PERIOD * 2) {
+          lastBotReplyTime.delete(threadKey);
+        }
+      }
+
       // Auto-reply: spawn a separate async task to call Dangbai chatbot backend
       // Conditions: only for inbound text messages (not self messages)
       if (!isSelf && isText && typeof content === 'string' && content.trim()) {
@@ -550,7 +607,12 @@ export async function startListenerForSession(sessionRow) {
               }
             }
             
-            if (sendRes) { await markMessageReplied(session_key, msgId); }
+            if (sendRes) { 
+              // Track bot reply time for self-message detection
+              const threadKey = `${session_key}:${threadId}`;
+              lastBotReplyTime.set(threadKey, Date.now());
+              await markMessageReplied(session_key, msgId); 
+            }
           } catch (e) {
             console.error('[Listener] auto-reply error', e.message || e);
           }
