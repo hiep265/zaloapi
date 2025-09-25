@@ -6,7 +6,7 @@ import { chatWithDangbaiLinhKien, chatWithMobileChatbot } from '../utils/dangbai
 import { sendTextMessage, sendLink } from './sendMessage.service.js';
 import { detectLinks } from '../utils/messageUtils.js';
 import { list as listIgnored } from '../repositories/ignoredConversations.repository.js';
-import { getByZaloUid as getStaffByZaloUid } from '../repositories/staff.repository.js';
+import { getBySessionKeyAndZaloUid as getStaffBySessionKeyAndZaloUid } from '../repositories/staff.repository.js';
 import { getBySessionKey as getBotConfigBySessionKey } from '../repositories/botConfig.repository.js';
 
 const activeListeners = new Map(); // account_id -> { api, stop, session_key }
@@ -398,7 +398,7 @@ export async function startListenerForSession(sessionRow) {
 
         // Pre-check 1: if sender is a staff with role 'staff' => suppress this thread for 10 minutes and skip reply
         try {
-          const staffRow = await getStaffByZaloUid(String(fromUid || ''));
+          const staffRow = await getStaffBySessionKeyAndZaloUid(String(session_key || ''), String(fromUid || ''));
           if (staffRow && String(staffRow.role || '').toLowerCase() === 'staff') {
             if (threadKeyStr) {
               const suppressKey = `${session_key}:${threadKeyStr}`;

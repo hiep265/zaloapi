@@ -43,6 +43,35 @@ export async function getByZaloUid(zaloUid) {
   return res.rows[0] || null;
 }
 
+export async function getBySessionKey(sessionKey) {
+  const res = await db.query(
+    `SELECT id, zalo_uid, name, role,
+            can_control_bot, can_manage_orders,
+            associated_session_keys,
+            is_active, created_at, updated_at
+     FROM staff
+     WHERE $1 = ANY(associated_session_keys)
+     LIMIT 1`,
+    [sessionKey]
+  );
+  return res.rows[0] || null;
+}
+
+export async function getBySessionKeyAndZaloUid(sessionKey, zaloUid) {
+  const res = await db.query(
+    `SELECT id, zalo_uid, name, role,
+            can_control_bot, can_manage_orders,
+            associated_session_keys,
+            is_active, created_at, updated_at
+     FROM staff
+     WHERE $1 = ANY(associated_session_keys)
+       AND zalo_uid = $2
+     LIMIT 1`,
+    [sessionKey, zaloUid]
+  );
+  return res.rows[0] || null;
+}
+
 export async function create({ zalo_uid, name, role, permissions = {}, associated_session_keys = [] }) {
   const {
     can_control_bot = false,
@@ -128,6 +157,8 @@ export default {
   list,
   getById,
   getByZaloUid,
+  getBySessionKey,
+  getBySessionKeyAndZaloUid,
   create,
   update,
   softDelete,

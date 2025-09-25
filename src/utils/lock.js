@@ -108,7 +108,7 @@ async function releaseRedis(key, token) {
   }
 }
 
-export async function acquireLock(key, ttlSeconds = 30) {
+export async function acquireLock(key, ttlSeconds = 5) {
   // Bước 1: chặn trùng trong cùng process
   if (processLocks.has(key)) {
     return false;
@@ -149,7 +149,7 @@ export async function releaseLock(key) {
   try { if (st?.redisToken) await releaseRedis(key, st.redisToken); } catch {}
 }
 
-export async function renewLock(key, ttlSeconds = 30) {
+export async function renewLock(key, ttlSeconds = 5) {
   const st = processLocks.get(key);
   if (!st) return false;
   // Gia hạn timer trong process
