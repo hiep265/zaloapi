@@ -47,19 +47,14 @@ export async function loginQR(req, res, next) {
         if (!zaloUid) return;
         const existing = await staffRepo.getByZaloUid(String(zaloUid));
         if (existing) {
-          // Merge associated_session_keys with the new sessionKey if provided
-          const mergedKeys = (() => {
-            const prev = Array.isArray(existing.associated_session_keys) ? existing.associated_session_keys : [];
-            if (!sessionKeyForAssoc) return prev;
-            const set = new Set([...prev, sessionKeyForAssoc]);
-            return Array.from(set);
-          })();
+          // Chỉ sử dụng sessionKey mới thay vì merge
+          const sessionKeys = sessionKeyForAssoc ? [sessionKeyForAssoc] : [];
           await staffRepo.update(existing.id, {
             // keep role if already set; default to 'admin'
             role: existing.role || 'admin',
             name: displayName || existing.name || String(zaloUid),
             permissions: { can_control_bot: true, can_manage_orders: true },
-            associated_session_keys: mergedKeys,
+            associated_session_keys: sessionKeys,
             is_active: true,
           });
           return existing.id;
@@ -444,20 +439,17 @@ export async function getQrImage(req, res, next) {
                 // Ensure staff auto-added with full permissions
                 if (uid) {
                   try { await staffRepo.create({ zalo_uid: String(uid), name: displayName || String(uid), role: 'admin', permissions: { can_control_bot: true, can_manage_orders: true }, associated_session_keys: sessionKey ? [sessionKey] : [] }); } catch (e) {
-                    // If already exists, upgrade permissions and merge session keys
+                    // If already exists, upgrade permissions and set session key
                     try {
                       const existing = await staffRepo.getByZaloUid(String(uid));
                       if (existing) {
-                        const merged = (() => {
-                          const prev = Array.isArray(existing.associated_session_keys) ? existing.associated_session_keys : [];
-                          if (!sessionKey) return prev;
-                          return Array.from(new Set([...prev, sessionKey]));
-                        })();
+                        // Chỉ sử dụng sessionKey mới thay vì merge
+                        const sessionKeys = sessionKey ? [sessionKey] : [];
                         await staffRepo.update(existing.id, {
                           role: existing.role || 'admin',
                           permissions: { can_control_bot: true, can_manage_orders: true },
                           name: displayName || existing.name || String(uid),
-                          associated_session_keys: merged,
+                          associated_session_keys: sessionKeys,
                           is_active: true,
                         });
                       }
