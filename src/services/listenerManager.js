@@ -712,16 +712,17 @@ export async function startListenerForSession(sessionRow) {
       // - Trong lúc listener hoạt động, nếu session hết hạn/đăng nhập nơi khác,
       //   các lỗi thường chứa các từ khóa bên dưới.
       // - Khi gặp lỗi auth: vô hiệu hóa session và dừng listener, KHÔNG tự khởi động lại.
-      const isAuthFailure = typeof errMsg === 'string' && (
-        errMsg.toLowerCase().includes('auth') ||
-        errMsg.toLowerCase().includes('unauthorized') ||
-        errMsg.toLowerCase().includes('forbidden') ||
-        errMsg.toLowerCase().includes('invalid') ||
-        errMsg.toLowerCase().includes('expired') ||
-        errMsg.includes('Đăng nhập thất bại') ||
-        errMsg.includes('Cookie not in this host') ||
-        errMsg.toLowerCase().includes('token') ||
-        errMsg.toLowerCase().includes('domain')
+      const lower = typeof errMsg === 'string' ? errMsg.toLowerCase() : '';
+      const isParseIssue = lower.includes('unexpected token'); // avoid false positive on JSON parse errors
+      const isAuthFailure = !isParseIssue && (
+        /\b(auth|authentication)\b/i.test(errMsg) ||
+        lower.includes('unauthorized') ||
+        lower.includes('forbidden') ||
+        /(invalid\s+(session|cookie|access\s*token)|session\s+invalid|cookie\s+invalid)/i.test(errMsg) ||
+        /(expired\s+(session|cookie|access\s*token)|session\s+expired|cookie\s+expired|token\s+expired)/i.test(errMsg) ||
+        lower.includes('đăng nhập thất bại') ||
+        lower.includes('cookie not in this host') ||
+        lower.includes('domain mismatch') || lower.includes('wrong domain')
       );
 
       if (isAuthFailure) {
@@ -760,6 +761,10 @@ export async function startListenerForSession(sessionRow) {
       activeListeners.delete(accKey);
       try { await releaseLock(lockKey); } catch {}
       if (stopRequests.has(String(accKey))) { try { stopRequests.delete(String(accKey)); } catch {}; return; }
+      if (authFailureFlags.has(String(accKey)) || authFailureFlags.has(String(session_key))) {
+        // Do not reconnect after an explicit auth failure deactivation
+        return;
+      }
       if (restartRequests.has(String(accKey)) || restartRequests.has(String(session_key))) {
         // Part of an intentional restart; 'stop' handler will schedule reconnect
         return;
@@ -777,6 +782,10 @@ export async function startListenerForSession(sessionRow) {
       // Nếu có yêu cầu dừng chủ động, không làm gì thêm
       if (stopRequests.has(String(accKey))) {
         try { stopRequests.delete(String(accKey)); } catch {}
+        return;
+      }
+      if (authFailureFlags.has(String(accKey)) || authFailureFlags.has(String(session_key))) {
+        // Do not reconnect after an explicit auth failure deactivation
         return;
       }
       // Nếu đây là đóng do restart chủ động, để 'stop' handler lên lịch reconnect
@@ -808,6 +817,9 @@ export async function startListenerForSession(sessionRow) {
     try { reconnectAttempts.delete(String(session_key)); } catch {}
     try { restartRequests.delete(String(accKey)); } catch {}
     try { restartRequests.delete(String(session_key)); } catch {}
+    // Clear any stale auth-failure flags after a successful start
+    try { authFailureFlags.delete(String(accKey)); } catch {}
+    try { authFailureFlags.delete(String(session_key)); } catch {}
     console.log('[Listener] started', accKey);
   } catch (error) {
     console.error('[Listener] Failed to start listener for session', sessionRow?.session_key, ':', error.message || error);
