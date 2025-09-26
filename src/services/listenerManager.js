@@ -13,6 +13,46 @@ const activeListeners = new Map(); // account_id -> { api, stop, session_key }
 const stopRequests = new Set(); // keys we explicitly asked to stop (no auto-restart)
 const authFailureFlags = new Set(); // keys that had auth failures (avoid auto-restart)
 
+// Reconnection control: track retry counts and in-flight restart requests/timers
+const reconnectAttempts = new Map(); // key => number of attempts since last successful start
+const restartRequests = new Set(); // keys we intentionally stop() to restart, so 'stop' handler won't deactivate
+const reconnectTimers = new Map(); // key => timer id to avoid double scheduling
+
+function scheduleReconnect(accKey, sessionRow, delayMs = 3000) {
+  try {
+    const key = String(accKey);
+    // Avoid double-scheduling if multiple events ('disconnected' and 'closed') fire together
+    if (reconnectTimers.has(key)) {
+      return;
+    }
+    console.log('[Listener] scheduling reconnect for', key, 'in', delayMs, 'ms');
+    const timer = setTimeout(async () => {
+      reconnectTimers.delete(key);
+      const prev = Number(reconnectAttempts.get(key) || 0) + 1;
+      reconnectAttempts.set(key, prev);
+      if (prev <= 3) {
+        console.log('[Listener] reconnect attempt', `${prev}/3`, 'for', key);
+        try {
+          await startListenerForSession(sessionRow);
+        } catch (e) {
+          console.error('[Listener] reconnect start failed:', e?.message || e);
+        }
+      } else {
+        console.warn('[Listener] max reconnect attempts reached; deactivating session:', sessionRow?.session_key);
+        try {
+          await deleteSessionByKey(sessionRow?.session_key);
+        } catch (e) {
+          console.error('[Listener] failed to deactivate session after max retries:', sessionRow?.session_key, e?.message || e);
+        }
+        try { reconnectAttempts.delete(key); } catch {}
+      }
+    }, delayMs);
+    reconnectTimers.set(key, timer);
+  } catch (e) {
+    console.warn('[Listener] scheduleReconnect error:', e?.message || e);
+  }
+}
+
 // Suppression map: per-thread auto-reply suppression when staff speaks
 const DEFAULT_SUPPRESS_MINUTES = 10; // Fallback if no bot_configs
 const threadSuppression = new Map(); // key = `${session_key}:${threadId}` => expiry timestamp (ms)
@@ -635,13 +675,21 @@ export async function startListenerForSession(sessionRow) {
         stopRequests.delete(String(accKey));
         return;
       }
-      // Deactivate session on unexpected stop (likely due to user opening Zalo Web/App)
-      try {
-        await deleteSessionByKey(session_key);
-        console.log('[Listener] session deactivated due to stop event:', session_key);
-      } catch (e) {
-        console.error('[Listener] failed to deactivate session on stop:', session_key, e?.message || e);
+      // If this stop was triggered intentionally for restart, schedule reconnect and skip deactivation
+      if (restartRequests.has(String(accKey)) || restartRequests.has(String(session_key))) {
+        try { restartRequests.delete(String(accKey)); } catch {}
+        try { restartRequests.delete(String(session_key)); } catch {}
+        scheduleReconnect(accKey, sessionRow, 2000);
+        return;
       }
+      // If we already flagged auth failure earlier, do nothing (already deactivated)
+      if (authFailureFlags.has(String(accKey)) || authFailureFlags.has(String(session_key))) {
+        try { authFailureFlags.delete(String(accKey)); } catch {}
+        try { authFailureFlags.delete(String(session_key)); } catch {}
+        return;
+      }
+      // Otherwise: schedule reconnect attempt (up to 3 times)
+      scheduleReconnect(accKey, sessionRow, 3000);
     });
 
     // Add global error handler for the listener
@@ -693,28 +741,30 @@ export async function startListenerForSession(sessionRow) {
         // Stop listener and release lock; 'stop' handler will clean up
         try { api.listener.stop(); } catch {}
         try { await releaseLock(lockKey); } catch {}
+      } else {
+        // For non-auth errors: trigger a graceful restart attempt (up to 3 retries)
+        console.warn('[Listener] non-auth error; requesting restart for', accKey);
+        try { restartRequests.add(String(accKey)); } catch {}
+        try { restartRequests.add(String(session_key)); } catch {}
+        try { api.listener.stop(); } catch {}
       }
-      // For non-auth errors, just log; we rely on the internal listener to keep running
     });
 
     // Lắng nghe sự kiện WebSocket bị ngắt kết nối để thu thập code/reason chi tiết (global scope)
     api.listener.on('disconnected', async (code, reason) => {
       // Các mã thường gặp từ zca-js: 3000 (DuplicateConnection), 3003 (KickConnection)
       console.warn('[Listener] disconnected', accKey, 'code=', code, 'reason=', reason);
-      // Nếu phát hiện Disconnect do đăng nhập nơi khác/kết nối trùng lặp, xử lý ngay tương tự 'closed'
-      const isKickOrDuplicate = Number(code) === 3003 || Number(code) === 3000;
-      if (isKickOrDuplicate) {
-        const h = activeListeners.get(accKey);
-        if (h?.lockRenewId) { try { clearInterval(h.lockRenewId); } catch {} }
-        activeListeners.delete(accKey);
-        try { await releaseLock(lockKey); } catch {}
-        try {
-          await deleteSessionByKey(session_key);
-          console.log('[Listener] session deactivated due to disconnected code', code, 'session=', session_key);
-        } catch (e) {
-          console.error('[Listener] failed to deactivate session on disconnected:', session_key, e?.message || e);
-        }
+      // Always cleanup current handles and release lock, then schedule reconnect (unless explicitly stopped)
+      const h = activeListeners.get(accKey);
+      if (h?.lockRenewId) { try { clearInterval(h.lockRenewId); } catch {} }
+      activeListeners.delete(accKey);
+      try { await releaseLock(lockKey); } catch {}
+      if (stopRequests.has(String(accKey))) { try { stopRequests.delete(String(accKey)); } catch {}; return; }
+      if (restartRequests.has(String(accKey)) || restartRequests.has(String(session_key))) {
+        // Part of an intentional restart; 'stop' handler will schedule reconnect
+        return;
       }
+      scheduleReconnect(accKey, sessionRow, 3000);
     });
 
     // Khi socket đóng hẳn: xử lý như stop, và nếu là Kick/Duplicate coi như mất phiên đăng nhập (global scope)
@@ -724,24 +774,17 @@ export async function startListenerForSession(sessionRow) {
       if (h?.lockRenewId) { try { clearInterval(h.lockRenewId); } catch {} }
       activeListeners.delete(accKey);
       try { await releaseLock(lockKey); } catch {}
-
-      // Nếu đây là đóng do đăng nhập nơi khác hoặc kết nối trùng lặp ⇒ vô hiệu hóa session
-      const isKickOrDuplicate = Number(code) === 3003 || Number(code) === 3000;
-      if (isKickOrDuplicate) {
-        try {
-          await deleteSessionByKey(session_key);
-          console.log('[Listener] session deactivated due to closed code', code, 'session=', session_key);
-        } catch (e) {
-          console.error('[Listener] failed to deactivate session on closed:', session_key, e?.message || e);
-        }
-        return;
-      }
       // Nếu có yêu cầu dừng chủ động, không làm gì thêm
       if (stopRequests.has(String(accKey))) {
         try { stopRequests.delete(String(accKey)); } catch {}
         return;
       }
-      // Mặc định: không auto-restart; yêu cầu đăng nhập lại nếu cần
+      // Nếu đây là đóng do restart chủ động, để 'stop' handler lên lịch reconnect
+      if (restartRequests.has(String(accKey)) || restartRequests.has(String(session_key))) {
+        return;
+      }
+      // Mặc định: thử auto-reconnect tối đa 3 lần rồi mới deactivate
+      scheduleReconnect(accKey, sessionRow, 3000);
     });
 
     api.listener.start();
@@ -760,6 +803,11 @@ export async function startListenerForSession(sessionRow) {
     }, 5000); // renew every 20s (less than TTL)
 
     activeListeners.set(accKey, { api, stop: () => api.listener.stop(), session_key, lockRenewId: lockRenewInterval });
+    // Reset reconnect state on successful start
+    try { reconnectAttempts.delete(String(accKey)); } catch {}
+    try { reconnectAttempts.delete(String(session_key)); } catch {}
+    try { restartRequests.delete(String(accKey)); } catch {}
+    try { restartRequests.delete(String(session_key)); } catch {}
     console.log('[Listener] started', accKey);
   } catch (error) {
     console.error('[Listener] Failed to start listener for session', sessionRow?.session_key, ':', error.message || error);
