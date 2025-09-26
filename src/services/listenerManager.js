@@ -766,7 +766,8 @@ export async function startListenerForSession(sessionRow) {
         return;
       }
       if (restartRequests.has(String(accKey)) || restartRequests.has(String(session_key))) {
-        // Part of an intentional restart; 'stop' handler will schedule reconnect
+        // Part of an intentional restart; still schedule reconnect to be safe
+        scheduleReconnect(accKey, sessionRow, 2000);
         return;
       }
       scheduleReconnect(accKey, sessionRow, 3000);
@@ -788,8 +789,9 @@ export async function startListenerForSession(sessionRow) {
         // Do not reconnect after an explicit auth failure deactivation
         return;
       }
-      // Nếu đây là đóng do restart chủ động, để 'stop' handler lên lịch reconnect
+      // Nếu đây là đóng do restart chủ động, vẫn chủ động lên lịch reconnect (tránh phụ thuộc vào 'stop')
       if (restartRequests.has(String(accKey)) || restartRequests.has(String(session_key))) {
+        scheduleReconnect(accKey, sessionRow, 2000);
         return;
       }
       // Mặc định: thử auto-reconnect tối đa 3 lần rồi mới deactivate
