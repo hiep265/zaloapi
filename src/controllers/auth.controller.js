@@ -53,7 +53,7 @@ export async function loginQR(req, res, next) {
             // keep role if already set; default to 'admin'
             role: existing.role || 'admin',
             name: displayName || existing.name || String(zaloUid),
-            permissions: { can_control_bot: true, can_manage_orders: true },
+            permissions: { can_control_bot: true, can_manage_orders: true, can_receive_notifications: true },
             associated_session_keys: sessionKeys,
             is_active: true,
           });
@@ -63,7 +63,7 @@ export async function loginQR(req, res, next) {
           zalo_uid: String(zaloUid),
           name: displayName || String(zaloUid),
           role: 'admin',
-          permissions: { can_control_bot: true, can_manage_orders: true },
+          permissions: { can_control_bot: true, can_manage_orders: true, can_receive_notifications: true },
           associated_session_keys: sessionKeyForAssoc ? [sessionKeyForAssoc] : [],
         });
         return created?.id;
@@ -438,7 +438,7 @@ export async function getQrImage(req, res, next) {
 
                 // Ensure staff auto-added with full permissions
                 if (uid) {
-                  try { await staffRepo.create({ zalo_uid: String(uid), name: displayName || String(uid), role: 'admin', permissions: { can_control_bot: true, can_manage_orders: true }, associated_session_keys: sessionKey ? [sessionKey] : [] }); } catch (e) {
+                  try { await staffRepo.create({ zalo_uid: String(uid), name: displayName || String(uid), role: 'admin', permissions: { can_control_bot: true, can_manage_orders: true, can_receive_notifications: true }, associated_session_keys: sessionKey ? [sessionKey] : [] }); } catch (e) {
                     // If already exists, upgrade permissions and set session key
                     try {
                       const existing = await staffRepo.getByZaloUid(String(uid));
@@ -447,7 +447,7 @@ export async function getQrImage(req, res, next) {
                         const sessionKeys = sessionKey ? [sessionKey] : [];
                         await staffRepo.update(existing.id, {
                           role: existing.role || 'admin',
-                          permissions: { can_control_bot: true, can_manage_orders: true },
+                          permissions: { can_control_bot: true, can_manage_orders: true, can_receive_notifications: true },
                           name: displayName || existing.name || String(uid),
                           associated_session_keys: sessionKeys,
                           is_active: true,

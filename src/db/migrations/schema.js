@@ -278,6 +278,7 @@ export async function runMigrations(client) {
       role VARCHAR(50) NOT NULL,
       can_control_bot BOOLEAN DEFAULT false,
       can_manage_orders BOOLEAN DEFAULT false,
+      can_receive_notifications BOOLEAN DEFAULT true,
       associated_session_keys TEXT[],
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -293,6 +294,12 @@ export async function runMigrations(client) {
         WHERE table_name='staff' AND column_name='can_manage_orders'
       ) THEN
         ALTER TABLE staff ADD COLUMN can_manage_orders BOOLEAN DEFAULT false;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='staff' AND column_name='can_receive_notifications'
+      ) THEN
+        ALTER TABLE staff ADD COLUMN can_receive_notifications BOOLEAN DEFAULT true;
       END IF;
       IF EXISTS (
         SELECT 1 FROM information_schema.columns

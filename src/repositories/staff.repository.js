@@ -3,7 +3,7 @@ import db from '../db/index.js';
 export async function list({ limit = 50, offset = 0, includeInactive = false } = {}) {
   const res = await db.query(
     `SELECT id, zalo_uid, name, role,
-            can_control_bot, can_manage_orders,
+            can_control_bot, can_manage_orders, can_receive_notifications,
             associated_session_keys,
             is_active, created_at, updated_at
      FROM staff
@@ -18,7 +18,7 @@ export async function list({ limit = 50, offset = 0, includeInactive = false } =
 export async function getById(id) {
   const res = await db.query(
     `SELECT id, zalo_uid, name, role,
-            can_control_bot, can_manage_orders,
+            can_control_bot, can_manage_orders, can_receive_notifications,
             associated_session_keys,
             is_active, created_at, updated_at
      FROM staff
@@ -32,7 +32,7 @@ export async function getById(id) {
 export async function getByZaloUid(zaloUid) {
   const res = await db.query(
     `SELECT id, zalo_uid, name, role,
-            can_control_bot, can_manage_orders,
+            can_control_bot, can_manage_orders, can_receive_notifications,
             associated_session_keys,
             is_active, created_at, updated_at
      FROM staff
@@ -46,7 +46,7 @@ export async function getByZaloUid(zaloUid) {
 export async function getBySessionKey(sessionKey) {
   const res = await db.query(
     `SELECT id, zalo_uid, name, role,
-            can_control_bot, can_manage_orders,
+            can_control_bot, can_manage_orders, can_receive_notifications,
             associated_session_keys,
             is_active, created_at, updated_at
      FROM staff
@@ -60,7 +60,7 @@ export async function getBySessionKey(sessionKey) {
 export async function getBySessionKeyAndZaloUid(sessionKey, zaloUid) {
   const res = await db.query(
     `SELECT id, zalo_uid, name, role,
-            can_control_bot, can_manage_orders,
+            can_control_bot, can_manage_orders, can_receive_notifications,
             associated_session_keys,
             is_active, created_at, updated_at
      FROM staff
@@ -76,16 +76,17 @@ export async function create({ zalo_uid, name, role, permissions = {}, associate
   const {
     can_control_bot = false,
     can_manage_orders = false,
+    can_receive_notifications = true,
   } = permissions;
 
   const res = await db.query(
     `INSERT INTO staff(
         zalo_uid, name, role,
-        can_control_bot, can_manage_orders,
+        can_control_bot, can_manage_orders, can_receive_notifications,
         associated_session_keys
-     ) VALUES ($1, $2, $3, $4, $5, $6)
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING id, zalo_uid, name, role,
-               can_control_bot, can_manage_orders,
+               can_control_bot, can_manage_orders, can_receive_notifications,
                associated_session_keys,
                is_active, created_at, updated_at`,
     [
@@ -94,6 +95,7 @@ export async function create({ zalo_uid, name, role, permissions = {}, associate
       role,
       can_control_bot,
       can_manage_orders,
+      can_receive_notifications,
       associated_session_keys,
     ]
   );
@@ -127,6 +129,10 @@ export async function update(id, { name, role, permissions, associated_session_k
         values.push(permissions.can_manage_orders);
       }
     }
+    if (permissions.can_receive_notifications !== undefined) {
+      fields.push(`can_receive_notifications = $${idx++}`);
+      values.push(permissions.can_receive_notifications);
+    }
   }
   if (associated_session_keys !== undefined) { fields.push(`associated_session_keys = $${idx++}`); values.push(associated_session_keys); }
   if (is_active !== undefined) { fields.push(`is_active = $${idx++}`); values.push(is_active); }
@@ -137,7 +143,7 @@ export async function update(id, { name, role, permissions, associated_session_k
 
   fields.push(`updated_at = NOW()`);
   const sql = `UPDATE staff SET ${fields.join(', ')} WHERE id = $${idx} RETURNING id, zalo_uid, name, role,
-    can_control_bot, can_manage_orders,
+    can_control_bot, can_manage_orders, can_receive_notifications,
     associated_session_keys, is_active, created_at, updated_at`;
   values.push(id);
 

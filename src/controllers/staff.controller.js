@@ -53,10 +53,10 @@ export async function updateStaff(req, res, next) {
       const current = await staffRepo.getById(id);
       if (!current) return res.status(404).json({ ok: false, error: 'Staff not found' });
       const targetRole = (role !== undefined ? role : current.role) || '';
-      const isAdmin = String(targetRole).toLowerCase() === 'admin';
-      if (isAdmin && permissions && permissions.can_manage_orders === false) {
-        return res.status(400).json({ ok: false, error: 'Admin cannot revoke can_manage_orders' });
-      }
+      // const isAdmin = String(targetRole).toLowerCase() === 'admin';
+      // if (isAdmin && permissions && permissions.can_manage_orders === false) {
+      //   return res.status(400).json({ ok: false, error: 'Admin cannot revoke can_manage_orders' });
+      // }
     } catch (e) {
       // If role cannot be verified, fallback to repository enforcement
     }
