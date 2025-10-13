@@ -63,4 +63,41 @@ export async function sendLink({ api, threadId, link, msg, type = ThreadType.Use
   }
 }
 
-export default { sendTextMessage, sendLink };
+/**
+ * Send text message via Dangbai backend FastAPI (forwards to zaloapi).
+ * Requires backend to accept Bearer JWT and optional X-API-Key.
+ *
+ * @param {Object} opts
+ * @param {string} opts.threadId
+ * @param {string} opts.msg
+ * @param {string} [opts.apiBaseUrl=process.env.DANGBAI_BASE_URL||'http://localhost:8000']
+ * @param {string} [opts.apiKey=process.env.DANGBAI_API_KEY]
+ * @param {string} [opts.bearer=process.env.DANGBAI_BEARER]
+ * @returns {Promise<object|null>} response json or null
+ */
+export async function sendTextViaDangbaiBackend({ threadId, msg, apiBaseUrl, apiKey, bearer } = {}) {
+  try {
+    const base = apiBaseUrl || process.env.DANGBAI_BASE_URL || 'http://localhost:8000';
+    const url = `${base.replace(/\/$/, '')}/api/v1/zalo/send-message`;
+    const headers = { 'Content-Type': 'application/json' };
+    const xKey = apiKey || process.env.DANGBAI_API_KEY;
+    if (xKey) headers['X-API-Key'] = xKey;
+    const token = bearer || process.env.DANGBAI_BEARER;
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ thread_id: String(threadId || ''), message: String(msg || '') })
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`sendTextViaDangbaiBackend failed ${res.status}: ${text}`);
+    }
+    return await res.json().catch(() => ({}));
+  } catch (e) {
+    console.error('[sendMessage] sendTextViaDangbaiBackend error:', e?.message || String(e));
+    return null;
+  }
+}
+
+export default { sendTextMessage, sendLink, sendTextViaDangbaiBackend };

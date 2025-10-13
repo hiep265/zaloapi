@@ -28,6 +28,28 @@ export async function postToDangbai(path, body) {
   }
 }
 
+export async function postToDangbaiAuth(path, body, apiKey) {
+  const url = `${DANGBAI_BASE_URL}${path}`;
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    const keyToUse = apiKey || DANGBAI_API_KEY;
+    if (keyToUse) headers['X-API-Key'] = keyToUse;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body || {}),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Dangbai POST ${path} failed ${res.status}: ${text}`);
+    }
+    return await res.json().catch(() => ({}));
+  } catch (e) {
+    console.error('[dangbaiClient] error', e.message);
+    return null;
+  }
+}
+
 export async function chatWithDangbaiLinhKien({ message, model_choice = 'gemini', session_id = 'default', apiKey }) {
   const url = `${DANGBAI_BASE_URL}/api/v1/chatbot-linhkien/chat`;
   // Prepare abort controller outside try so finally can access it
@@ -111,4 +133,4 @@ export async function chatWithMobileChatbot({ query, stream = false, llm_provide
   }
 }
 
-export default { postToDangbai, chatWithDangbaiLinhKien, chatWithMobileChatbot };
+export default { postToDangbai, postToDangbaiAuth, chatWithDangbaiLinhKien, chatWithMobileChatbot };

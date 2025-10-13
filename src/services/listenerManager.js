@@ -2,7 +2,7 @@ import { Zalo, ThreadType } from 'zca-js';
 import { listActiveSessions, setAccountIdBySessionKey, deleteSessionByKey, getBySessionKey } from '../repositories/session.repository.js';
 import { saveIncomingMessage, markMessageReplied } from '../repositories/message.repository.js';
 import { acquireLock, releaseLock, renewLock } from '../utils/lock.js';
-import { chatWithDangbaiLinhKien, chatWithMobileChatbot } from '../utils/dangbaiClient.js';
+import { chatWithDangbaiLinhKien, chatWithMobileChatbot, postToDangbaiAuth } from '../utils/dangbaiClient.js';
 import { sendTextMessage, sendLink } from './sendMessage.service.js';
 import { detectLinks } from '../utils/messageUtils.js';
 import { list as listIgnored } from '../repositories/ignoredConversations.repository.js';
@@ -437,6 +437,32 @@ export async function startListenerForSession(sessionRow) {
         from_uid: fromUid ? String(fromUid) : null,
         to_uid: toUid ? String(toUid) : null,
       });
+
+      // Push real-time event to Dangbai backend WebSocket bridge
+      try {
+        const payload = {
+          type: 'zalo_message',
+          data: {
+            session_key,
+            thread_id: threadId,
+            peer_id: String(peerId || ''),
+            msg_id: String(msgId),
+            direction,
+            is_self: isSelf,
+            content,
+            msg_type: msgType,
+            ts,
+            d_name: normalizedDName,
+            group_name: groupName,
+            from_uid: fromUid ? String(fromUid) : null,
+            to_uid: toUid ? String(toUid) : null,
+            attachments: message?.data?.attachments || null,
+          },
+        };
+        await postToDangbaiAuth('/api/v1/ws/push', payload, sessionRow?.api_key || api_key);
+      } catch (pushErr) {
+        console.warn('[Listener] push to backend ws failed:', pushErr?.message || pushErr);
+      }
 
       // Self-message suppression: if user sends message from their account (not via chatbot API)
       // then suppress auto-replies in this thread for configured minutes
