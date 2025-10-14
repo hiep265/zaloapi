@@ -132,21 +132,10 @@ export async function sendMessageIfPermitted(req, res, next) {
       return res.status(400).json({ ok: false, error: 'Missing message' });
     }
 
-    // Check staff permission for the session owner (account_id)
-    const sessionRow = await sessionRepo.getBySessionKey(String(session_key));
-    const ownerUid = sessionRow?.account_id ? String(sessionRow.account_id) : null;
-    const staffRow = ownerUid
-      ? await staffRepo.getBySessionKeyAndZaloUid(String(session_key), ownerUid)
-      : null;
-    if (!staffRow || staffRow.can_receive_notifications !== true) {
-      return res.status(403).json({ ok: false, error: 'Permission denied: can_receive_notifications is required' });
-    }
+    // Removed permission gate: allow manual message sending for the session owner
 
-    // Resolve conversation name from messages (latest d_name)
-    let displayName = await resolveConversationName(String(session_key), String(thread_id));
-    if (displayName) displayName = String(displayName).trim();
-
-    const finalMsg = displayName ? `${displayName} ${String(message)}` : String(message);
+    // Plan A: do not prefix with display name; send the exact message content
+    const finalMsg = String(message);
 
     // Send via Zalo API
     const api = await getApiForSession(String(session_key));
