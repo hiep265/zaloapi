@@ -50,7 +50,7 @@ export async function postToDangbaiAuth(path, body, apiKey) {
   }
 }
 
-export async function chatWithDangbaiLinhKien({ message, model_choice = 'gemini', session_id = 'default', apiKey }) {
+export async function chatWithDangbaiLinhKien({ message, model_choice = 'gemini', session_id = 'default', apiKey, image_url }) {
   const url = `${DANGBAI_BASE_URL}/api/v1/chatbot-linhkien/chat`;
   // Prepare abort controller outside try so finally can access it
   const controller = new AbortController();
@@ -61,6 +61,7 @@ export async function chatWithDangbaiLinhKien({ message, model_choice = 'gemini'
     params.append('message', message || '');
     params.append('model_choice', model_choice || 'gemini');
     params.append('session_id', session_id || 'default');
+    if (image_url) params.append('image_url', String(image_url));
 
     // Only send X-API-Key (no Bearer)
     const headers = { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' };

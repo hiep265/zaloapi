@@ -523,8 +523,13 @@ export async function startListenerForSession(sessionRow) {
       }
 
       // Auto-reply: spawn a separate async task to call Dangbai chatbot backend
-      // Conditions: only for inbound text messages (not self messages)
-      if (!isSelf && isText && typeof content === 'string' && content.trim()) {
+      // Conditions: inbound text OR photo messages (not self messages)
+      if (
+        !isSelf && (
+          (isText && typeof content === 'string' && content.trim()) ||
+          isPhoto
+        )
+      ) {
         // Pre-check 0: skip if this thread is currently suppressed due to staff activity
         const threadKeyStr = String(threadId || '');
         if (threadKeyStr) {
@@ -595,19 +600,26 @@ export async function startListenerForSession(sessionRow) {
               }
             } catch (_) { /* ignore */ }
 
+            // Prepare payload for chatbot
+            const msgForBot = isText
+              ? String(content || '')
+              : [d?.content?.title, d?.content?.description].filter(Boolean).join('\n');
+            const imageUrlForBot = isPhoto ? (d?.content?.href || d?.content?.thumb || null) : null;
+
             let resp = null;
             if (effectivePriority === 'custom') {
               // Call custom chatbot (linhkien)
               resp = await chatWithDangbaiLinhKien({
-                message: content,
+                message: msgForBot,
                 model_choice: 'gemini',
                 session_id: threadId,
                 apiKey: effectiveApiKey,
+                image_url: imageUrlForBot || undefined,
               });
             } else {
               // Default or 'mobile' -> call mobile chatbot
               resp = await chatWithMobileChatbot({
-                query: content,
+                query: isText ? content : (msgForBot || ''),
                 stream: false,
                 llm_provider: 'google_genai',
                 apiKey: effectiveApiKey,
