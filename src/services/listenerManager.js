@@ -25,9 +25,17 @@ function scheduleReconnect(accKey, sessionRow, delayMs = 3000) {
     if (reconnectTimers.has(key)) {
       return;
     }
+    // Skip scheduling if a stop/logout was requested
+    if (stopRequests.has(key) || stopRequests.has(String(sessionRow?.session_key || ''))) {
+      return;
+    }
     console.log('[Listener] scheduling reconnect for', key, 'in', delayMs, 'ms');
     const timer = setTimeout(async () => {
       reconnectTimers.delete(key);
+      // If a stop/logout was requested in the meantime, do not start
+      if (stopRequests.has(key) || stopRequests.has(String(sessionRow?.session_key || ''))) {
+        return;
+      }
       const prev = Number(reconnectAttempts.get(key) || 0) + 1;
       reconnectAttempts.set(key, prev);
       if (prev <= 3) {
@@ -183,7 +191,7 @@ export async function startListenerForSession(sessionRow) {
       return;
     }
 
-    const accKey = account_id || session_key;
+    const accKey = String(account_id || session_key);
     
     // Check if already running first, before acquiring lock
     if (activeListeners.has(accKey)) {
@@ -197,7 +205,14 @@ export async function startListenerForSession(sessionRow) {
       console.log('[Listener] lock busy skip', accKey);
       // Only retry if we're not already running
       if (!activeListeners.has(accKey)) {
-        setTimeout(() => startListenerForSession(sessionRow).catch(console.error), 3000);
+        // Skip retry if a stop was explicitly requested for this key/session (e.g., logout)
+        if (stopRequests.has(String(accKey)) || stopRequests.has(String(session_key))) {
+          return;
+        }
+        setTimeout(() => {
+          if (stopRequests.has(String(accKey)) || stopRequests.has(String(session_key))) return;
+          startListenerForSession(sessionRow).catch(console.error);
+        }, 3000);
       }
       return;
     }
@@ -259,9 +274,15 @@ export async function startListenerForSession(sessionRow) {
         return;
       }
       
-      // For other errors, release lock and retry later (backoff 10s)
+      // For other errors, release lock and retry later (backoff 10s),
+      // but skip if a stop/logout request was recorded.
       await releaseLock(lockKey);
-      setTimeout(() => startListenerForSession(sessionRow).catch(console.error), 10000);
+      if (!stopRequests.has(String(accKey)) && !stopRequests.has(String(session_key))) {
+        setTimeout(() => {
+          if (stopRequests.has(String(accKey)) || stopRequests.has(String(session_key))) return;
+          startListenerForSession(sessionRow).catch(console.error);
+        }, 10000);
+      }
       return;
     }
 
@@ -697,8 +718,9 @@ export async function startListenerForSession(sessionRow) {
       activeListeners.delete(accKey);
       await releaseLock(lockKey);
       // If this stop was explicitly requested (e.g., logout), do NOT auto-restart
-      if (stopRequests.has(String(accKey))) {
+      if (stopRequests.has(String(accKey)) || stopRequests.has(String(session_key))) {
         stopRequests.delete(String(accKey));
+        try { stopRequests.delete(String(session_key)); } catch {}
         return;
       }
       // If this stop was triggered intentionally for restart, schedule reconnect and skip deactivation
@@ -786,7 +808,7 @@ export async function startListenerForSession(sessionRow) {
       if (h?.lockRenewId) { try { clearInterval(h.lockRenewId); } catch {} }
       activeListeners.delete(accKey);
       try { await releaseLock(lockKey); } catch {}
-      if (stopRequests.has(String(accKey))) { try { stopRequests.delete(String(accKey)); } catch {}; return; }
+      if (stopRequests.has(String(accKey)) || stopRequests.has(String(session_key))) { try { stopRequests.delete(String(accKey)); } catch {}; try { stopRequests.delete(String(session_key)); } catch {}; return; }
       if (authFailureFlags.has(String(accKey)) || authFailureFlags.has(String(session_key))) {
         // Do not reconnect after an explicit auth failure deactivation
         return;
@@ -807,8 +829,9 @@ export async function startListenerForSession(sessionRow) {
       activeListeners.delete(accKey);
       try { await releaseLock(lockKey); } catch {}
       // Nếu có yêu cầu dừng chủ động, không làm gì thêm
-      if (stopRequests.has(String(accKey))) {
+      if (stopRequests.has(String(accKey)) || stopRequests.has(String(session_key))) {
         try { stopRequests.delete(String(accKey)); } catch {}
+        try { stopRequests.delete(String(session_key)); } catch {}
         return;
       }
       if (authFailureFlags.has(String(accKey)) || authFailureFlags.has(String(session_key))) {
@@ -866,25 +889,44 @@ export function listRunning() {
 }
 
 export async function stopListener(accountIdOrSessionKey) {
-  const h = activeListeners.get(accountIdOrSessionKey);
+  const keyStr = String(accountIdOrSessionKey);
+  let realKey = keyStr;
+  let h = activeListeners.get(keyStr);
+  // If not found by the direct key, try to locate by session_key field
+  if (!h) {
+    for (const [k, v] of activeListeners.entries()) {
+      if (String(k) === keyStr || (v && String(v.session_key) === keyStr)) {
+        realKey = String(k);
+        h = v;
+        break;
+      }
+    }
+  }
+  // Mark stop request early to suppress reconnects from event handlers
+  try { stopRequests.add(String(realKey)); } catch {}
+  try { stopRequests.add(String(keyStr)); } catch {}
   if (h) {
     // Clear timers
-    if (h.lockRenewId) {
-      clearInterval(h.lockRenewId);
-    }
-    // Mark this key (and the paired session key if present) to prevent auto-restart
-    try { stopRequests.add(String(accountIdOrSessionKey)); } catch {}
-    if (h && h.session_key) {
-      try { stopRequests.add(String(h.session_key)); } catch {}
-    }
+    if (h.lockRenewId) { try { clearInterval(h.lockRenewId); } catch {} }
+    // Also mark paired session key if present
+    if (h.session_key) { try { stopRequests.add(String(h.session_key)); } catch {} }
+    // Cancel any pending reconnect timer for both keys
+    try {
+      const t1 = reconnectTimers.get(String(realKey));
+      if (t1) { clearTimeout(t1); reconnectTimers.delete(String(realKey)); }
+    } catch {}
+    try {
+      const t2 = reconnectTimers.get(String(h.session_key));
+      if (t2) { clearTimeout(t2); reconnectTimers.delete(String(h.session_key)); }
+    } catch {}
     try { h.stop(); } catch {}
-    activeListeners.delete(accountIdOrSessionKey);
+    try { activeListeners.delete(realKey); } catch {}
   }
   // Wait a moment for the listener to fully stop before releasing locks
   await new Promise(r => setTimeout(r, 500));
 
   // Always release lock(s) so a fresh start isn't blocked
-  try { await releaseLock(`zalo:listener:account:${accountIdOrSessionKey}`); } catch {}
+  try { await releaseLock(`zalo:listener:account:${realKey}`); } catch {}
   // Also try to release by the paired identifier if we have it
   if (h && h.session_key) {
     try { await releaseLock(`zalo:listener:account:${h.session_key}`); } catch {}
