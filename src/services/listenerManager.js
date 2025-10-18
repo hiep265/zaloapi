@@ -624,6 +624,7 @@ export async function startListenerForSession(sessionRow) {
                 llm_provider: 'google_genai',
                 apiKey: effectiveApiKey,
                 thread_id: threadId,
+                image_url: imageUrlForBot || undefined,
               });
             }
 
