@@ -1,4 +1,8 @@
 import { ThreadType } from 'zca-js';
+import sharp from 'sharp';
+import path from 'path';
+import os from 'os';
+import fs from 'fs';
 
 /**
  * Send a plain text message via an existing zca-js API instance.
@@ -100,4 +104,59 @@ export async function sendTextViaDangbaiBackend({ threadId, msg, apiBaseUrl, api
   }
 }
 
-export default { sendTextMessage, sendLink, sendTextViaDangbaiBackend };
+export async function sendImageMessage({ api, threadId, filePath, imageUrl, msg, type = ThreadType.User }) {
+  if (!api || typeof api.sendMessage !== 'function') {
+    console.warn('[sendImageMessage] invalid api instance or sendMessage not available');
+    return null;
+  }
+  if (!threadId) {
+    console.warn('[sendImageMessage] missing threadId');
+    return null;
+  }
+  try {
+    let attachments = [];
+    let tmpToCleanup = null;
+    try {
+      if (filePath && String(filePath).trim()) {
+        attachments = [String(filePath)];
+      } else if (imageUrl && String(imageUrl).trim()) {
+        const urlStr = String(imageUrl).trim();
+        const res = await fetch(urlStr);
+        if (!res.ok) throw new Error(`fetch image failed ${res.status}`);
+        const buf = Buffer.from(await res.arrayBuffer());
+        // Infer extension
+        const contentType = res.headers.get('content-type') || '';
+        let ext = 'jpg';
+        if (contentType.includes('jpeg')) ext = 'jpg';
+        else if (contentType.includes('png')) ext = 'png';
+        else if (contentType.includes('gif')) ext = 'gif';
+        else if (contentType.includes('webp')) ext = 'webp';
+        try {
+          const u = new URL(urlStr);
+          const pn = path.basename(u.pathname || '');
+          const m = pn.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+          if (m) ext = m[1].toLowerCase().replace('jpeg', 'jpg');
+        } catch {}
+        const tmp = path.join(os.tmpdir(), `zimg-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`);
+        await fs.promises.writeFile(tmp, buf);
+        tmpToCleanup = tmp;
+        attachments = [tmp];
+      } else {
+        console.warn('[sendImageMessage] missing filePath or imageUrl');
+        return null;
+      }
+      const content = { attachments, msg: (msg && String(msg).trim()) || '' };
+      const res = await api.sendMessage(content, String(threadId), type);
+      return res || null;
+    } finally {
+      if (tmpToCleanup) {
+        fs.promises.unlink(tmpToCleanup).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.error('[sendImageMessage] failed to send image:', e?.message || String(e));
+    return null;
+  }
+}
+
+export default { sendTextMessage, sendLink, sendTextViaDangbaiBackend, sendImageMessage };

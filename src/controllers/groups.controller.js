@@ -3,8 +3,102 @@ import { getApiForSession } from '../services/zalo.service.js';
 import * as staffRepo from '../repositories/staff.repository.js';
 import * as sessionRepo from '../repositories/session.repository.js';
 import { resolveConversationName } from '../repositories/conversation.repository.js';
-import { sendTextMessage } from '../services/sendMessage.service.js';
+import { sendTextMessage, sendImageMessage } from '../services/sendMessage.service.js';
+import sharp from 'sharp';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
+/**
+ * POST /api/groups/send-image
+ * Body: { session_key: string, thread_id: string, image_url?: string, file_path?: string, message?: string }
+ *
+ * Sends an image to the given thread. Accepts either a direct file path (server-readable)
+ * or an image URL to fetch and forward. Optional caption via `message`.
+ */
+export async function sendImageIfPermitted(req, res, next) {
+  try {
+    const { session_key, thread_id, image_url, file_path, message } = req.body || {};
+    if (!session_key || !String(session_key).trim()) {
+      return res.status(400).json({ ok: false, error: 'Missing session_key' });
+    }
+    if (!thread_id || !String(thread_id).trim()) {
+      return res.status(400).json({ ok: false, error: 'Missing thread_id' });
+    }
+    if ((!image_url || !String(image_url).trim()) && (!file_path || !String(file_path).trim())) {
+      return res.status(400).json({ ok: false, error: 'Missing image_url or file_path' });
+    }
+
+    const api = await getApiForSession(String(session_key));
+    const result = await sendImageMessage({
+      api,
+      threadId: String(thread_id),
+      imageUrl: image_url,
+      filePath: file_path,
+      msg: typeof message === 'string' ? message : undefined,
+    });
+
+    if (!result) {
+      return res.status(500).json({ ok: false, error: 'Failed to send image' });
+    }
+
+    return res.status(200).json({ ok: true, data: result, thread_id: String(thread_id) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function sendImageFileIfPermitted(req, res, next) {
+  try {
+    const { session_key, thread_id, message } = req.body || {};
+    if (!session_key || !String(session_key).trim()) {
+      return res.status(400).json({ ok: false, error: 'Missing session_key' });
+    }
+    if (!thread_id || !String(thread_id).trim()) {
+      return res.status(400).json({ ok: false, error: 'Missing thread_id' });
+    }
+    const file = req.file;
+    if (!file || !file.buffer) {
+      return res.status(400).json({ ok: false, error: 'Missing image file' });
+    }
+
+    const api = await getApiForSession(String(session_key));
+    const buf = file.buffer;
+    // Determine extension
+    let ext = 'jpg';
+    const ct = (file.mimetype || '').toLowerCase();
+    if (ct.includes('jpeg')) ext = 'jpg';
+    else if (ct.includes('png')) ext = 'png';
+    else if (ct.includes('gif')) ext = 'gif';
+    else if (ct.includes('webp')) ext = 'webp';
+    const nameMatch = (file.originalname || '').match(/\.(jpg|jpeg|png|gif|webp)$/i);
+    if (nameMatch) ext = nameMatch[1].toLowerCase().replace('jpeg', 'jpg');
+
+    const tmp = path.join(os.tmpdir(), `zimg-upload-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`);
+    await fs.promises.writeFile(tmp, buf);
+
+    try {
+      const content = { attachments: [tmp], msg: (typeof message === 'string' && message.trim()) ? String(message).trim() : '' };
+      console.debug('[send-image-file] content', {
+        hasMsg: Object.prototype.hasOwnProperty.call(content, 'msg'),
+        msgType: typeof content.msg,
+        msgLen: typeof content.msg === 'string' ? content.msg.length : undefined,
+        attIsArray: Array.isArray(content.attachments),
+        attLen: Array.isArray(content.attachments) ? content.attachments.length : undefined,
+        att0Type: Array.isArray(content.attachments) ? typeof content.attachments[0] : undefined
+      });
+      const result = await api.sendMessage(content, String(thread_id), ThreadType.User);
+      if (!result) {
+        return res.status(500).json({ ok: false, error: 'Failed to send image' });
+      }
+      return res.status(200).json({ ok: true, data: result, thread_id: String(thread_id) });
+    } finally {
+      fs.promises.unlink(tmp).catch(() => {});
+    }
+  } catch (err) {
+    next(err);
+  }
+}
 /**
  * POST /api/groups/managers
  * Body: { session_key: string, thread_id: string, name?: string, avatarSource?: string, message?: string }
