@@ -186,6 +186,7 @@ export async function loginQR(req, res, next) {
                             displayName = info?.name || info?.displayName || info?.userName || info?.user?.name || null;
                           }
                           console.log('[DEBUG] displayName resolved =', displayName);
+                          if (displayName) { displayNameHint = displayName; }
                         }
                       } catch (_) {}
                     } else {
@@ -224,6 +225,7 @@ export async function loginQR(req, res, next) {
                     await sessionRepo.upsertBySessionKey({
                       session_key: sessionKey,
                       account_id: uid || null,
+                      display_name: displayNameHint || null,
                       cookies_json: cookiesJsonText,
                       imei: imei || null,
                       user_agent: ua,
@@ -234,6 +236,7 @@ export async function loginQR(req, res, next) {
                   } else {
                     await sessionRepo.upsertActiveSession({
                       account_id: uid || null,
+                      display_name: displayNameHint || null,
                       cookies_json: cookiesJsonText,
                       imei: imei || null,
                       user_agent: ua,
@@ -391,6 +394,7 @@ export async function getQrImage(req, res, next) {
                   await sessionRepo.upsertBySessionKey({
                     session_key: sessionKey,
                     account_id: uid || null,
+                    display_name: displayName || null,
                     cookies_json: cookies || null,
                     imei: imei || null,
                     user_agent: ua,
@@ -400,6 +404,7 @@ export async function getQrImage(req, res, next) {
                 } else {
                   await sessionRepo.upsertActiveSession({
                     account_id: uid || null,
+                    display_name: displayName || null,
                     cookies_json: cookies || null,
                     imei: imei || null,
                     user_agent: ua,
