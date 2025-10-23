@@ -54,6 +54,7 @@ export async function loginQR(req, res, next) {
             role: existing.role || 'admin',
             name: displayName || existing.name || String(zaloUid),
             permissions: { can_control_bot: true, can_manage_orders: true, can_receive_notifications: true },
+            owner_account_id: String(zaloUid),
             associated_session_keys: sessionKeys,
             is_active: true,
           });
@@ -63,6 +64,7 @@ export async function loginQR(req, res, next) {
           zalo_uid: String(zaloUid),
           name: displayName || String(zaloUid),
           role: 'admin',
+          owner_account_id: String(zaloUid),
           permissions: { can_control_bot: true, can_manage_orders: true, can_receive_notifications: true },
           associated_session_keys: sessionKeyForAssoc ? [sessionKeyForAssoc] : [],
         });

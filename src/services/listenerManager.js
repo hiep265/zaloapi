@@ -489,7 +489,7 @@ export async function startListenerForSession(sessionRow) {
       // Self-message suppression: if user sends message from their account (not via chatbot API)
       // then suppress auto-replies in this thread for configured minutes
       if (isSelf && isText && typeof content === 'string' && content.trim()) {
-        const threadKey = `${session_key}:${threadId}`;
+        const threadKey = `${session_key}:${accId || account_id || ''}:${threadId}`;
         const threadKeyStr = String(threadId || '');
         const lastBotTime = lastBotReplyTime.get(threadKey);
         const now = Date.now();
@@ -500,7 +500,7 @@ export async function startListenerForSession(sessionRow) {
         
         if (isFromUser && threadKeyStr) {
           // Apply suppression like staff logic
-          const suppressKey = `${session_key}:${threadKeyStr}`;
+          const suppressKey = `${session_key}:${accId || account_id || ''}:${threadKeyStr}`;
           const ttl = await getSuppressMs(session_key);
           threadSuppression.set(suppressKey, Date.now() + ttl);
           console.log('[Listener] self message from user; suppress auto-replies', { 
@@ -531,14 +531,14 @@ export async function startListenerForSession(sessionRow) {
           isPhoto
         )
       ) {
-        // Pre-check 0: skip if this thread is currently suppressed due to staff activity
+        // Pre-check 0: skip if this thread is currently suppressed due to staff activity (scoped by session + owner account)
         const threadKeyStr = String(threadId || '');
         if (threadKeyStr) {
-          const suppressKey = `${session_key}:${threadKeyStr}`;
+          const suppressKey = `${session_key}:${accId || account_id || ''}:${threadKeyStr}`;
           const now = Date.now();
           const until = threadSuppression.get(suppressKey);
           if (until && now < until) {
-            console.log('[Listener] thread suppressed; skip auto-reply', { session_key, threadId: threadKeyStr, until });
+            console.log('[Listener] thread suppressed; skip auto-reply', { session_key, owner_account_id: accId || account_id || '', threadId: threadKeyStr, until });
             return;
           }
           if (until && now >= until) {
@@ -546,16 +546,17 @@ export async function startListenerForSession(sessionRow) {
           }
         }
 
-        // Pre-check 1: if sender is a staff with role 'staff' => suppress this thread for 10 minutes and skip reply
+        // Pre-check 1: if sender is a staff with role 'staff' for this owner account => suppress this thread for configured minutes and skip reply
         try {
           const staffRow = await getStaffBySessionKeyAndZaloUid(String(session_key || ''), String(fromUid || ''));
-          if (staffRow && String(staffRow.role || '').toLowerCase() === 'staff') {
+          const ownerOk = !staffRow?.owner_account_id || String(staffRow.owner_account_id) === String(accId || account_id || '');
+          if (staffRow && ownerOk && String(staffRow.role || '').toLowerCase() === 'staff') {
             if (threadKeyStr) {
-              const suppressKey = `${session_key}:${threadKeyStr}`;
+              const suppressKey = `${session_key}:${accId || account_id || ''}:${threadKeyStr}`;
               const ttl = await getSuppressMs(session_key);
               threadSuppression.set(suppressKey, Date.now() + ttl);
             }
-            console.log('[Listener] inbound from staff; suppress auto-replies', { session_key, threadId: threadKeyStr, fromUid });
+            console.log('[Listener] inbound from staff; suppress auto-replies', { session_key, owner_account_id: accId || account_id || '', threadId: threadKeyStr, fromUid });
             return;
           }
         } catch (staffErr) {
@@ -589,14 +590,14 @@ export async function startListenerForSession(sessionRow) {
               console.warn('[Listener] ignore-check failed:', ignErr?.message || ignErr);
             }
 
-            // Re-check suppression inside worker to avoid race conditions
+            // Re-check suppression inside worker to avoid race conditions (scoped by session + owner account)
             try {
               const threadKeyStr = String(threadId || '');
               if (threadKeyStr) {
-                const suppressKey = `${session_key}:${threadKeyStr}`;
+                const suppressKey = `${session_key}:${accId || account_id || ''}:${threadKeyStr}`;
                 const until = threadSuppression.get(suppressKey);
                 if (until && Date.now() < until) {
-                  console.log('[Listener] thread suppressed (worker); skip auto-reply', { session_key, threadId: threadKeyStr, until });
+                  console.log('[Listener] thread suppressed (worker); skip auto-reply', { session_key, owner_account_id: accId || account_id || '', threadId: threadKeyStr, until });
                   return;
                 }
               }
@@ -711,7 +712,7 @@ export async function startListenerForSession(sessionRow) {
             
             if (sendRes) { 
               // Track bot reply time for self-message detection
-              const threadKey = `${session_key}:${threadId}`;
+              const threadKey = `${session_key}:${accId || account_id || ''}:${threadId}`;
               lastBotReplyTime.set(threadKey, Date.now());
               await markMessageReplied(session_key, accId || account_id || null, msgId); 
             }

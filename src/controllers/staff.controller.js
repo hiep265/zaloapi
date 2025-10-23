@@ -9,7 +9,9 @@ export async function listStaff(req, res, next) {
     const limit = Number(req.query.limit || 50);
     const offset = Number(req.query.offset || 0);
     const includeInactive = String(req.query.includeInactive || 'false') === 'true';
-    const rows = await staffRepo.list({ limit, offset, includeInactive });
+    const sessionKey = (req.query.session_key || req.query.key || '').toString().trim() || null;
+    const accountId = (req.query.account_id || '').toString().trim() || null;
+    const rows = await staffRepo.list({ limit, offset, includeInactive, sessionKey, accountId });
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 }
@@ -32,11 +34,11 @@ export async function getStaff(req, res, next) {
  */
 export async function createStaff(req, res, next) {
   try {
-    const { zalo_uid, name, role, permissions, associated_session_keys } = req.body || {};
+    const { zalo_uid, name, role, permissions, associated_session_keys, owner_account_id } = req.body || {};
     if (!zalo_uid || !name || !role) {
       return res.status(400).json({ ok: false, error: 'zalo_uid, name, role are required' });
     }
-    const created = await staffRepo.create({ zalo_uid, name, role, permissions, associated_session_keys });
+    const created = await staffRepo.create({ zalo_uid, name, role, owner_account_id, permissions, associated_session_keys });
     res.status(201).json({ ok: true, data: created });
   } catch (err) { next(err); }
 }
@@ -47,7 +49,7 @@ export async function createStaff(req, res, next) {
 export async function updateStaff(req, res, next) {
   try {
     const { id } = req.params;
-    const { name, role, permissions, associated_session_keys, is_active } = req.body || {};
+    const { name, role, permissions, associated_session_keys, is_active, owner_account_id } = req.body || {};
     // Business rule: Admins cannot have can_manage_orders revoked
     try {
       const current = await staffRepo.getById(id);
@@ -60,7 +62,7 @@ export async function updateStaff(req, res, next) {
     } catch (e) {
       // If role cannot be verified, fallback to repository enforcement
     }
-    const updated = await staffRepo.update(id, { name, role, permissions, associated_session_keys, is_active });
+    const updated = await staffRepo.update(id, { name, role, permissions, associated_session_keys, is_active, owner_account_id });
     if (!updated) return res.status(404).json({ ok: false, error: 'Staff not found' });
     res.json({ ok: true, data: updated });
   } catch (err) { next(err); }

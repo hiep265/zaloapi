@@ -380,6 +380,7 @@ export async function runMigrations(client) {
       zalo_uid TEXT NOT NULL UNIQUE,
       name VARCHAR(255) NOT NULL,
       role VARCHAR(50) NOT NULL,
+      owner_account_id TEXT,
       can_control_bot BOOLEAN DEFAULT false,
       can_manage_orders BOOLEAN DEFAULT false,
       can_receive_notifications BOOLEAN DEFAULT true,
@@ -416,6 +417,12 @@ export async function runMigrations(client) {
         WHERE table_name='staff' AND column_name='can_manage_staff'
       ) THEN
         ALTER TABLE staff DROP COLUMN can_manage_staff;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='staff' AND column_name='owner_account_id'
+      ) THEN
+        ALTER TABLE staff ADD COLUMN owner_account_id TEXT;
       END IF;
     END $$;
   `);
@@ -533,6 +540,11 @@ export async function runMigrations(client) {
         SELECT 1 FROM pg_indexes WHERE tablename = 'staff' AND indexname = 'idx_staff_role'
       ) THEN
         CREATE INDEX idx_staff_role ON staff(role) WHERE is_active = true;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes WHERE tablename = 'staff' AND indexname = 'idx_staff_owner'
+      ) THEN
+        CREATE INDEX idx_staff_owner ON staff(owner_account_id) WHERE owner_account_id IS NOT NULL;
       END IF;
       IF NOT EXISTS (
         SELECT 1 FROM pg_indexes WHERE tablename = 'bot_logs' AND indexname = 'idx_bot_logs_session'
