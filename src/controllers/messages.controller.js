@@ -81,6 +81,7 @@ export async function getConversationMessages(req, res, next) {
       return res.status(400).json({ error: 'Missing thread_id or peer_id' });
     }
 
+    const clientOrder = order === 'asc' ? 'asc' : 'desc';
     const options = {
       session_key,
       account_id,
@@ -88,10 +89,15 @@ export async function getConversationMessages(req, res, next) {
       peer_id: peer_id || null,
       limit: Math.min(Math.max(Number(limit) || 50, 1), 200),
       before_ts: before_ts ? Number(before_ts) : null,
-      order: order === 'desc' ? 'desc' : 'asc',
+      // Always fetch newest first to ensure the window is the latest N
+      order: 'desc',
     };
 
     const messages = await getConversation(options);
+    // If the client prefers ascending display order, reverse after fetching latest N
+    if (clientOrder === 'asc') {
+      messages.reverse();
+    }
     res.json({ 
       items: messages, 
       count: messages.length,
