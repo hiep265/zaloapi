@@ -185,6 +185,33 @@ export async function runMigrations(client) {
     END $$;
   `);
 
+  await client.query(`
+    DO $$
+    BEGIN
+      BEGIN
+        ALTER TABLE messages DROP CONSTRAINT IF EXISTS uniq_messages_session_msgid;
+      EXCEPTION WHEN others THEN NULL; END;
+      BEGIN
+        DROP INDEX IF EXISTS uniq_messages_session_msgid;
+      EXCEPTION WHEN others THEN NULL; END;
+    END $$;
+  `);
+
+  await client.query(`
+    WITH ranked AS (
+      SELECT id,
+             ROW_NUMBER() OVER (
+               PARTITION BY session_key, msg_id
+               ORDER BY COALESCE(ts, 0) DESC, created_at DESC
+             ) AS rn
+      FROM messages
+      WHERE msg_id IS NOT NULL
+    )
+    DELETE FROM messages m
+    USING ranked r
+    WHERE m.id = r.id AND r.rn > 1;
+  `);
+
   // 1) Drop legacy unique index if it exists (do not attempt to create it again)
   await client.query(`
     DO $$

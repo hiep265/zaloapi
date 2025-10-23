@@ -251,28 +251,26 @@ export async function getThreadsByUser(session_key, owner_account_id, { limit = 
 }
 
 export async function getConversation({ session_key, account_id, thread_id, peer_id, limit = 50, before_ts = null, order = 'asc' }) {
-  const conds = ['session_key = $1'];
-  const vals = [session_key];
+  const conds = [];
+  const vals = [];
+  const add = (sql, v) => { vals.push(v); conds.push(`${sql} $${vals.length}`); };
+  add('session_key =', session_key);
   if (account_id) {
-    conds.push('owner_account_id = $2');
+    add('owner_account_id =', account_id);
   }
-  
   // Support both new thread_id and legacy peer_id
   if (thread_id) {
-    conds.push(`thread_id = $${vals.length + (account_id ? 2 : 1)}`);
-    vals.push(thread_id);
+    add('thread_id =', thread_id);
   } else if (peer_id) {
-    conds.push(`(peer_id = $${vals.length + (account_id ? 2 : 1)} OR thread_id = $${vals.length + (account_id ? 2 : 1)})`);
     vals.push(peer_id);
+    const idx = vals.length;
+    conds.push(`(peer_id = $${idx} OR thread_id = $${idx})`);
   } else {
     throw new Error('Either thread_id or peer_id must be provided');
   }
-  
   if (before_ts) {
-    conds.push(`COALESCE(ts, EXTRACT(EPOCH FROM created_at)*1000)::bigint < $${vals.length + 1}`);
-    vals.push(Number(before_ts));
+    add('COALESCE(ts, EXTRACT(EPOCH FROM created_at)*1000)::bigint <', Number(before_ts));
   }
-  
   const where = `WHERE ${conds.join(' AND ')}`;
   const sql = `
     SELECT id, session_key, account_id, type, thread_id, id_to, uid_from, d_name, group_name, is_self,
