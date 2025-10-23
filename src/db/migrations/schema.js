@@ -185,25 +185,38 @@ export async function runMigrations(client) {
     END $$;
   `);
 
+  // 1) Drop legacy unique index if it exists (do not attempt to create it again)
   await client.query(`
     DO $$
     BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'uniq_messages_session_msgid'
-      ) THEN
-        CREATE UNIQUE INDEX uniq_messages_session_msgid ON messages(session_key, msg_id);
-      END IF;
-      -- Drop legacy unique index to allow per-account duplicates of msg_id
-      IF EXISTS (
-        SELECT 1 FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'uniq_messages_session_msgid'
-      ) THEN
-        BEGIN
-          DROP INDEX IF EXISTS uniq_messages_session_msgid;
-        EXCEPTION WHEN others THEN
-          -- ignore drop errors
-          NULL;
-        END;
-      END IF;
+      BEGIN
+        DROP INDEX IF EXISTS uniq_messages_session_msgid;
+      EXCEPTION WHEN others THEN
+        NULL;
+      END;
+    END $$;
+  `);
+
+  // 2) Deduplicate rows to satisfy new composite uniqueness
+  await client.query(`
+    WITH ranked AS (
+      SELECT id,
+             ROW_NUMBER() OVER (
+               PARTITION BY session_key, owner_account_id, msg_id
+               ORDER BY COALESCE(ts, 0) DESC, created_at DESC
+             ) AS rn
+      FROM messages
+      WHERE msg_id IS NOT NULL
+    )
+    DELETE FROM messages m
+    USING ranked r
+    WHERE m.id = r.id AND r.rn > 1;
+  `);
+
+  // 3) Create new composite unique and other indexes
+  await client.query(`
+    DO $$
+    BEGIN
       IF NOT EXISTS (
         SELECT 1 FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'uniq_messages_session_owner_msgid'
       ) THEN
