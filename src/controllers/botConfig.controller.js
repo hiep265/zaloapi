@@ -45,7 +45,8 @@ export async function list(req, res, next) {
 export async function get(req, res, next) {
   try {
     const { session_key } = req.params;
-    const row = await getBySessionKey(session_key);
+    const account_id = req.query?.account_id ? String(req.query.account_id) : null;
+    const row = await getBySessionKey(session_key, account_id || null);
     res.json({ data: row });
   } catch (e) { next(e); }
 }
@@ -77,9 +78,9 @@ export async function get(req, res, next) {
 export async function upsert(req, res, next) {
   try {
     const { session_key } = req.params;
-    const { stop_minutes } = req.body || {};
+    const { stop_minutes, account_id } = req.body || {};
     const minutes = Number.isFinite(Number(stop_minutes)) ? Number(stop_minutes) : 10;
-    const row = await setStopMinutes(session_key, minutes);
+    const row = await setStopMinutes(session_key, minutes, account_id || null);
     res.json({ data: row });
   } catch (e) { next(e); }
 }

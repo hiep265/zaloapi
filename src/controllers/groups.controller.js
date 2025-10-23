@@ -18,7 +18,7 @@ import path from 'path';
  */
 export async function sendImageIfPermitted(req, res, next) {
   try {
-    const { session_key, thread_id, image_url, file_path, message } = req.body || {};
+    const { session_key, account_id, thread_id, image_url, file_path, message } = req.body || {};
     if (!session_key || !String(session_key).trim()) {
       return res.status(400).json({ ok: false, error: 'Missing session_key' });
     }
@@ -28,8 +28,7 @@ export async function sendImageIfPermitted(req, res, next) {
     if ((!image_url || !String(image_url).trim()) && (!file_path || !String(file_path).trim())) {
       return res.status(400).json({ ok: false, error: 'Missing image_url or file_path' });
     }
-
-    const api = await getApiForSession(String(session_key));
+    const api = await getApiForSession(String(session_key), account_id || undefined);
     const result = await sendImageMessage({
       api,
       threadId: String(thread_id),
@@ -50,7 +49,7 @@ export async function sendImageIfPermitted(req, res, next) {
 
 export async function sendImageFileIfPermitted(req, res, next) {
   try {
-    const { session_key, thread_id, message } = req.body || {};
+    const { session_key, account_id, thread_id, message } = req.body || {};
     if (!session_key || !String(session_key).trim()) {
       return res.status(400).json({ ok: false, error: 'Missing session_key' });
     }
@@ -62,7 +61,7 @@ export async function sendImageFileIfPermitted(req, res, next) {
       return res.status(400).json({ ok: false, error: 'Missing image file' });
     }
 
-    const api = await getApiForSession(String(session_key));
+    const api = await getApiForSession(String(session_key), account_id || undefined);
     const buf = file.buffer;
     // Determine extension
     let ext = 'jpg';
@@ -109,7 +108,7 @@ export async function sendImageFileIfPermitted(req, res, next) {
  */
 export async function createManagersGroup(req, res, next) {
   try {
-    const { session_key, thread_id, name, avatarSource, message } = req.body || {};
+    const { session_key, account_id, thread_id, name, avatarSource, message } = req.body || {};
 
     if (!session_key || typeof session_key !== 'string' || !session_key.trim()) {
       return res.status(400).json({ error: 'Missing session_key' });
@@ -118,7 +117,7 @@ export async function createManagersGroup(req, res, next) {
       return res.status(400).json({ error: 'Missing thread_id' });
     }
 
-    const api = await getApiForSession(String(session_key));
+    const api = await getApiForSession(String(session_key), account_id || undefined);
 
     // Filter out current account (self) from members
     let selfId = null;
@@ -215,7 +214,7 @@ export async function createManagersGroup(req, res, next) {
  */
 export async function sendMessageIfPermitted(req, res, next) {
   try {
-    const { session_key, thread_id, message } = req.body || {};
+    const { session_key, account_id, thread_id, message } = req.body || {};
     if (!session_key || !String(session_key).trim()) {
       return res.status(400).json({ ok: false, error: 'Missing session_key' });
     }
@@ -232,7 +231,7 @@ export async function sendMessageIfPermitted(req, res, next) {
     const finalMsg = String(message);
 
     // Send via Zalo API
-    const api = await getApiForSession(String(session_key));
+    const api = await getApiForSession(String(session_key), account_id || undefined);
     const result = await sendTextMessage({ api, threadId: String(thread_id), msg: finalMsg });
 
     if (!result) {

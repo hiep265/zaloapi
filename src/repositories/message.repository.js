@@ -2,6 +2,7 @@ import db from '../db/index.js';
 
 export async function saveIncomingMessage({
   session_key,
+  owner_account_id,
   account_id,
   // New Zalo message fields
   type,
@@ -49,10 +50,14 @@ export async function saveIncomingMessage({
   } catch (err) {
     // Column might already exist, ignore error
   }
+  // Ensure owner_account_id column exists (idempotent)
+  try {
+    await db.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS owner_account_id TEXT`);
+  } catch (_) {}
 
   const res = await db.query(
     `INSERT INTO messages(
-      session_key, account_id, type, thread_id, id_to, uid_from, d_name, group_name, is_self,
+      session_key, owner_account_id, account_id, type, thread_id, id_to, uid_from, d_name, group_name, is_self,
       content, msg_type, property_ext, quote, mentions, attachments_json,
       ts, msg_id, cli_msg_id, global_msg_id, real_msg_id,
       cmd, st, status, ttl, notify, top_out, top_out_time_out, top_out_impr_time_out,
@@ -60,17 +65,18 @@ export async function saveIncomingMessage({
       thread_type, peer_id, direction, message_id
      )
      VALUES(
-       $1, $2, $3, $4, $5, $6, $7, $8, $9,
-       $10, $11, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb,
-       $16, $17, $18, $19, $20,
-       $21, $22, $23, $24, $25, $26, $27, $28,
-       $29, $30, $31, $32::jsonb, $33::jsonb,
-       $34, $35, $36, $37
+       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+       $11, $12, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb,
+       $17, $18, $19, $20, $21,
+       $22, $23, $24, $25, $26, $27, $28, $29,
+       $30, $31, $32, $33::jsonb, $34::jsonb,
+       $35, $36, $37, $38
      )
-     ON CONFLICT (session_key, msg_id) DO NOTHING
+     ON CONFLICT (session_key, owner_account_id, msg_id) DO NOTHING
      RETURNING id`,
     [
       session_key,
+      owner_account_id || null,
       account_id || null,
       typeof type === 'number' ? type : null,
       thread_id || null,
@@ -122,7 +128,7 @@ export default {
 
 export async function queryMessages({
   session_key,
-  account_id,
+  account_id, // owner account id (self)
   thread_id,
   uid_from,
   peer_id,
@@ -141,7 +147,7 @@ export async function queryMessages({
   const add = (sql, v) => { vals.push(v); conds.push(`${sql} $${vals.length}`); };
 
   if (session_key) add('session_key =', session_key);
-  if (account_id) add('account_id =', account_id);
+  if (account_id) add('owner_account_id =', account_id);
   if (thread_id) add('thread_id =', thread_id);
   if (uid_from) add('uid_from =', uid_from);
   if (peer_id) add('peer_id =', peer_id);
@@ -173,15 +179,15 @@ export async function queryMessages({
   return res.rows || [];
 }
 
-export async function markMessageReplied(session_key, msg_id) {
+export async function markMessageReplied(session_key, owner_account_id, msg_id) {
   if (!session_key || !msg_id) return false;
   try {
     const sql = `
       UPDATE messages
       SET replied = true, replied_at = NOW()
-      WHERE session_key = $1 AND msg_id = $2
+      WHERE session_key = $1 AND owner_account_id = $2 AND msg_id = $3
     `;
-    await db.query(sql, [session_key, msg_id]);
+    await db.query(sql, [session_key, owner_account_id || null, msg_id]);
     return true;
   } catch (e) {
     console.error('[repo] markMessageReplied error', e.message || e);
@@ -189,14 +195,14 @@ export async function markMessageReplied(session_key, msg_id) {
   }
 }
 
-export async function getThreadsByUser(session_key, { limit = 50, offset = 0 } = {}) {
+export async function getThreadsByUser(session_key, owner_account_id, { limit = 50, offset = 0 } = {}) {
   // Latest message per thread_id for this user (session_key)
   const sql = `
     WITH messages_with_conv AS (
       SELECT m.*, COALESCE(m.thread_id, m.peer_id) AS conv_id,
              COALESCE(to_timestamp(m.ts/1000.0), m.created_at) AS msg_time
       FROM messages m
-      WHERE m.session_key = $1
+      WHERE m.session_key = $1 AND ($2::text IS NULL OR m.owner_account_id = $2)
     ),
     ranked AS (
       SELECT mwc.*, ROW_NUMBER() OVER (
@@ -220,6 +226,7 @@ export async function getThreadsByUser(session_key, { limit = 50, offset = 0 } =
       r.thread_id AS thread_id,
       r.peer_id AS peer_id,
       r.account_id AS account_id,
+      r.owner_account_id AS owner_account_id,
       r.type AS type,
       r.id_to AS id_to,
       r.uid_from AS uid_from,
@@ -237,22 +244,25 @@ export async function getThreadsByUser(session_key, { limit = 50, offset = 0 } =
     JOIN names n ON n.conv_id = COALESCE(r.thread_id, r.peer_id)
     WHERE r.rn = 1
     ORDER BY r.msg_time DESC, r.created_at DESC
-    LIMIT $2 OFFSET $3
+    LIMIT $3 OFFSET $4
   `;
-  const res = await db.query(sql, [session_key, Number(limit), Number(offset)]);
+  const res = await db.query(sql, [session_key, owner_account_id || null, Number(limit), Number(offset)]);
   return res.rows || [];
 }
 
-export async function getConversation({ session_key, thread_id, peer_id, limit = 50, before_ts = null, order = 'asc' }) {
+export async function getConversation({ session_key, account_id, thread_id, peer_id, limit = 50, before_ts = null, order = 'asc' }) {
   const conds = ['session_key = $1'];
   const vals = [session_key];
+  if (account_id) {
+    conds.push('owner_account_id = $2');
+  }
   
   // Support both new thread_id and legacy peer_id
   if (thread_id) {
-    conds.push('thread_id = $2');
+    conds.push(`thread_id = $${vals.length + (account_id ? 2 : 1)}`);
     vals.push(thread_id);
   } else if (peer_id) {
-    conds.push('(peer_id = $2 OR thread_id = $2)');
+    conds.push(`(peer_id = $${vals.length + (account_id ? 2 : 1)} OR thread_id = $${vals.length + (account_id ? 2 : 1)})`);
     vals.push(peer_id);
   } else {
     throw new Error('Either thread_id or peer_id must be provided');

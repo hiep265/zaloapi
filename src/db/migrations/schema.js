@@ -52,6 +52,7 @@ export async function runMigrations(client) {
     CREATE TABLE IF NOT EXISTS messages (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       session_key TEXT NOT NULL,
+      owner_account_id TEXT,
       account_id TEXT,
       type INTEGER,
       thread_id TEXT,
@@ -96,6 +97,9 @@ export async function runMigrations(client) {
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='messages' AND column_name='type') THEN
         ALTER TABLE messages ADD COLUMN type INTEGER;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='messages' AND column_name='owner_account_id') THEN
+        ALTER TABLE messages ADD COLUMN owner_account_id TEXT;
       END IF;
       IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='messages' AND column_name='thread_id') THEN
         ALTER TABLE messages ADD COLUMN thread_id TEXT;
@@ -189,10 +193,31 @@ export async function runMigrations(client) {
       ) THEN
         CREATE UNIQUE INDEX uniq_messages_session_msgid ON messages(session_key, msg_id);
       END IF;
+      -- Drop legacy unique index to allow per-account duplicates of msg_id
+      IF EXISTS (
+        SELECT 1 FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'uniq_messages_session_msgid'
+      ) THEN
+        BEGIN
+          DROP INDEX IF EXISTS uniq_messages_session_msgid;
+        EXCEPTION WHEN others THEN
+          -- ignore drop errors
+          NULL;
+        END;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'uniq_messages_session_owner_msgid'
+      ) THEN
+        CREATE UNIQUE INDEX uniq_messages_session_owner_msgid ON messages(session_key, owner_account_id, msg_id);
+      END IF;
       IF NOT EXISTS (
         SELECT 1 FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'idx_messages_thread'
       ) THEN
         CREATE INDEX idx_messages_thread ON messages(session_key, thread_id, ts DESC);
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'idx_messages_thread_owner'
+      ) THEN
+        CREATE INDEX idx_messages_thread_owner ON messages(session_key, owner_account_id, thread_id, ts DESC);
       END IF;
       IF NOT EXISTS (
         SELECT 1 FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'idx_messages_user'
@@ -200,9 +225,19 @@ export async function runMigrations(client) {
         CREATE INDEX idx_messages_user ON messages(session_key, uid_from, ts DESC);
       END IF;
       IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'idx_messages_user_owner'
+      ) THEN
+        CREATE INDEX idx_messages_user_owner ON messages(session_key, owner_account_id, uid_from, ts DESC);
+      END IF;
+      IF NOT EXISTS (
         SELECT 1 FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'idx_messages_timestamp'
       ) THEN
         CREATE INDEX idx_messages_timestamp ON messages(session_key, ts DESC);
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes WHERE tablename = 'messages' AND indexname = 'idx_messages_timestamp_owner'
+      ) THEN
+        CREATE INDEX idx_messages_timestamp_owner ON messages(session_key, owner_account_id, ts DESC);
       END IF;
     END $$;
   `);
@@ -260,13 +295,35 @@ export async function runMigrations(client) {
     CREATE TABLE IF NOT EXISTS ignored_conversations (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       session_key TEXT,
+      owner_account_id TEXT,
       user_id TEXT,
       thread_id TEXT NOT NULL,
       name TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW(),
-      UNIQUE(session_key, thread_id)
+      UNIQUE(session_key, owner_account_id, thread_id)
     );
+  `);
+
+  // Ensure ignored_conversations schema is up to date (owner_account_id + composite unique)
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name='ignored_conversations' AND column_name='owner_account_id'
+      ) THEN
+        ALTER TABLE ignored_conversations ADD COLUMN owner_account_id TEXT;
+      END IF;
+      -- Drop legacy unique if present (from older schema: session_key + thread_id)
+      BEGIN
+        ALTER TABLE ignored_conversations DROP CONSTRAINT IF EXISTS ignored_conversations_session_key_thread_id_key;
+      EXCEPTION WHEN others THEN NULL; END;
+      -- Add composite unique (session_key, owner_account_id, thread_id)
+      BEGIN
+        ALTER TABLE ignored_conversations ADD CONSTRAINT ignored_conversations_session_owner_thread_key UNIQUE(session_key, owner_account_id, thread_id);
+      EXCEPTION WHEN others THEN NULL; END;
+    END $$;
   `);
 
   // staff
@@ -421,6 +478,11 @@ export async function runMigrations(client) {
         CREATE INDEX idx_ignored_conversations_user ON ignored_conversations(session_key, user_id);
       END IF;
       IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes WHERE tablename = 'ignored_conversations' AND indexname = 'idx_ignored_conversations_session_owner'
+      ) THEN
+        CREATE INDEX idx_ignored_conversations_session_owner ON ignored_conversations(session_key, owner_account_id, thread_id);
+      END IF;
+      IF NOT EXISTS (
         SELECT 1 FROM pg_indexes WHERE tablename = 'staff' AND indexname = 'idx_staff_role'
       ) THEN
         CREATE INDEX idx_staff_role ON staff(role) WHERE is_active = true;
@@ -462,10 +524,12 @@ export async function runMigrations(client) {
   await client.query(`
     CREATE TABLE IF NOT EXISTS bot_configs (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      session_key TEXT UNIQUE NOT NULL,
+      session_key TEXT NOT NULL,
+      owner_account_id TEXT,
       stop_minutes INTEGER DEFAULT 10,
       created_at TIMESTAMPTZ DEFAULT NOW(),
-      updated_at TIMESTAMPTZ DEFAULT NOW()
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(session_key, owner_account_id)
     );
   `);
 
@@ -477,6 +541,18 @@ export async function runMigrations(client) {
       ) THEN
         ALTER TABLE bot_configs ADD COLUMN stop_minutes INTEGER DEFAULT 10;
       END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns WHERE table_name='bot_configs' AND column_name='owner_account_id'
+      ) THEN
+        ALTER TABLE bot_configs ADD COLUMN owner_account_id TEXT;
+      END IF;
+      -- Drop legacy UNIQUE(session_key) if present and replace with composite unique
+      BEGIN
+        ALTER TABLE bot_configs DROP CONSTRAINT IF EXISTS bot_configs_session_key_key;
+      EXCEPTION WHEN others THEN NULL; END;
+      BEGIN
+        ALTER TABLE bot_configs ADD CONSTRAINT bot_configs_session_owner_key UNIQUE (session_key, owner_account_id);
+      EXCEPTION WHEN others THEN NULL; END;
     END $$;
   `);
 
@@ -484,9 +560,9 @@ export async function runMigrations(client) {
     DO $$
     BEGIN
       IF NOT EXISTS (
-        SELECT 1 FROM pg_indexes WHERE tablename = 'bot_configs' AND indexname = 'idx_bot_configs_session'
+        SELECT 1 FROM pg_indexes WHERE tablename = 'bot_configs' AND indexname = 'idx_bot_configs_session_owner'
       ) THEN
-        CREATE INDEX idx_bot_configs_session ON bot_configs(session_key);
+        CREATE INDEX idx_bot_configs_session_owner ON bot_configs(session_key, owner_account_id);
       END IF;
     END $$;
   `);

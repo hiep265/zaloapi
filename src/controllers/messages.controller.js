@@ -19,8 +19,8 @@ export async function getMessages(req, res, next) {
       order,
     } = req.query;
 
-    if (!session_key && !account_id) {
-      return res.status(400).json({ error: 'Missing session_key or account_id' });
+    if (!session_key || !account_id) {
+      return res.status(400).json({ error: 'Missing session_key or account_id (both required)' });
     }
 
     const options = {
@@ -50,11 +50,11 @@ export async function getMessages(req, res, next) {
 export async function getThreads(req, res, next) {
   try {
     const { user_id } = req.params;
-    const { limit, offset } = req.query;
+    const { limit, offset, account_id } = req.query;
     if (!user_id) {
       return res.status(400).json({ error: 'Missing user_id' });
     }
-    const rows = await getThreadsByUser(user_id, {
+    const rows = await getThreadsByUser(user_id, account_id || null, {
       limit: Math.min(Math.max(Number(limit) || 50, 1), 200),
       offset: Math.max(Number(offset) || 0, 0),
     });
@@ -68,10 +68,13 @@ export async function getThreads(req, res, next) {
 export async function getConversationMessages(req, res, next) {
   try {
     const { session_key } = req.params;
-    const { thread_id, peer_id, limit, before_ts, order } = req.query;
+    const { account_id, thread_id, peer_id, limit, before_ts, order } = req.query;
 
     if (!session_key) {
       return res.status(400).json({ error: 'Missing session_key' });
+    }
+    if (!account_id) {
+      return res.status(400).json({ error: 'Missing account_id' });
     }
 
     if (!thread_id && !peer_id) {
@@ -80,6 +83,7 @@ export async function getConversationMessages(req, res, next) {
 
     const options = {
       session_key,
+      account_id,
       thread_id: thread_id || null,
       peer_id: peer_id || null,
       limit: Math.min(Math.max(Number(limit) || 50, 1), 200),
@@ -103,14 +107,18 @@ export default { getMessages, getThreads, getMessagesByUser, getConversationMess
 export async function getMessagesByUser(req, res, next) {
   try {
     const { user_id } = req.params;
-    const { limit, offset, order } = req.query;
+    const { limit, offset, order, account_id } = req.query;
 
     if (!user_id) {
       return res.status(400).json({ error: 'Missing user_id' });
     }
+    if (!account_id) {
+      return res.status(400).json({ error: 'Missing account_id' });
+    }
 
     const rows = await queryMessages({
       session_key: user_id,
+      account_id,
       limit: Math.min(Math.max(Number(limit) || 50, 1), 200),
       offset: Math.max(Number(offset) || 0, 0),
       order: order === 'asc' ? 'asc' : 'desc',

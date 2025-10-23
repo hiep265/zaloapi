@@ -417,6 +417,7 @@ export async function startListenerForSession(sessionRow) {
 
       await saveIncomingMessage({
         session_key,
+        owner_account_id: accId || account_id || null,
         account_id: isSelf ? (d.idTo || null) : (d.uidFrom || null),
         // New Zalo message fields
         type: d.type,
@@ -566,7 +567,7 @@ export async function startListenerForSession(sessionRow) {
           try {
             // Fetch latest session row to avoid stale data (priority/api_key may change at runtime)
             let latest = null;
-            try { latest = await getBySessionKey(session_key); } catch (_) { latest = null; }
+            try { latest = await getBySessionKey(session_key, accId || account_id || undefined); } catch (_) { latest = null; }
             const effectivePriority = (latest?.chatbot_priority || sessionRow?.chatbot_priority || 'mobile').toLowerCase();
             const effectiveApiKey = latest?.api_key || api_key || undefined;
 
@@ -574,6 +575,7 @@ export async function startListenerForSession(sessionRow) {
             try {
               const ignoreRows = await listIgnored({
                 session_key,
+                owner_account_id: accId || account_id || null,
                 thread_id: String(threadId || ''),
                 user_id: latest?.user_id || undefined,
                 limit: 1,
@@ -711,7 +713,7 @@ export async function startListenerForSession(sessionRow) {
               // Track bot reply time for self-message detection
               const threadKey = `${session_key}:${threadId}`;
               lastBotReplyTime.set(threadKey, Date.now());
-              await markMessageReplied(session_key, msgId); 
+              await markMessageReplied(session_key, accId || account_id || null, msgId); 
             }
           } catch (e) {
             console.error('[Listener] auto-reply error', e.message || e);

@@ -7,10 +7,10 @@ import config from '../config/index.js';
  */
 export async function listIgnored(req, res, next) {
   try {
-    const { session_key, thread_id, user_id } = req.query;
+    const { session_key, account_id, thread_id, user_id } = req.query;
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
-    const rows = await repo.list({ session_key, thread_id, user_id, limit, offset });
+    const rows = await repo.list({ session_key, owner_account_id: account_id || null, thread_id, user_id, limit, offset });
     res.json({ ok: true, data: rows, count: rows.length });
   } catch (err) { next(err); }
 }
@@ -29,14 +29,14 @@ export async function getIgnored(req, res, next) {
 
 /**
  * POST /api/ignored-conversations
- * Body: { session_key, thread_id, name?, user_id? }
- * Upsert theo (session_key, thread_id)
+ * Body: { session_key, account_id, thread_id, name?, user_id? }
+ * Upsert theo (session_key, account_id, thread_id)
  */
 export async function upsertIgnored(req, res, next) {
   try {
-    const { session_key, thread_id, name, user_id } = req.body || {};
-    if (!session_key || !thread_id) {
-      return res.status(400).json({ ok: false, error: 'session_key and thread_id are required' });
+    const { session_key, account_id, thread_id, name, user_id } = req.body || {};
+    if (!session_key || !account_id || !thread_id) {
+      return res.status(400).json({ ok: false, error: 'session_key, account_id and thread_id are required' });
     }
     // 1) Call external APIs first; only save to DB if all succeed
     const { customBaseUrl, mobileBaseUrl } = config.chatbot || {};
@@ -87,7 +87,7 @@ export async function upsertIgnored(req, res, next) {
     }
 
     // 2) Persist only if sync above succeeded
-    const created = await repo.upsert({ session_key, thread_id, name, user_id });
+    const created = await repo.upsert({ session_key, owner_account_id: account_id, thread_id, name, user_id });
     return res.status(201).json({ ok: true, data: created });
   } catch (err) { next(err); }
 }

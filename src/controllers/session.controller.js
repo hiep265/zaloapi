@@ -26,7 +26,9 @@ export async function setActiveSession(req, res, next) {
 export async function setChatbotPriority(req, res, next) {
   try {
     const { sessionKey } = req.params;
-    const { priority } = req.body;
+    const { priority, account_id: bodyAccountId } = req.body || {};
+    const queryAccountId = typeof req.query?.account_id === 'string' ? req.query.account_id : undefined;
+    const account_id = bodyAccountId ?? queryAccountId ?? undefined;
 
     if (!sessionKey) {
       return res.status(400).json({ error: 'sessionKey is required' });
@@ -41,7 +43,7 @@ export async function setChatbotPriority(req, res, next) {
       return res.status(400).json({ error: 'priority must be either "mobile", "custom" or null' });
     }
 
-    const result = await sessionRepo.setChatbotPriority(sessionKey, normalizedPriority);
+    const result = await sessionRepo.setChatbotPriority(sessionKey, account_id, normalizedPriority);
     
     if (!result) {
       return res.status(404).json({ error: 'Session not found or inactive' });
@@ -61,12 +63,13 @@ export async function setChatbotPriority(req, res, next) {
 export async function getChatbotPriority(req, res, next) {
   try {
     const { sessionKey } = req.params;
+    const queryAccountId = typeof req.query?.account_id === 'string' ? req.query.account_id : undefined;
 
     if (!sessionKey) {
       return res.status(400).json({ error: 'sessionKey is required' });
     }
 
-    const session = await sessionRepo.getBySessionKey(sessionKey);
+    const session = await sessionRepo.getBySessionKey(sessionKey, queryAccountId);
     
     if (!session) {
       return res.status(404).json({ error: 'Session not found or inactive' });
@@ -81,3 +84,4 @@ export async function getChatbotPriority(req, res, next) {
     next(err);
   }
 }
+

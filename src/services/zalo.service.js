@@ -19,7 +19,7 @@ async function imageMetadataGetter(filePath) {
 
 let apiInstance = null; // holds zca-js API after login
 let lastLoginAt = 0;
-const perSessionCache = new Map(); // key: session_key -> { api, lastLoginAt }
+const perSessionCache = new Map(); // key: `${session_key}::${account_id||''}` -> { api, lastLoginAt }
 
 export async function getApi() {
   if (apiInstance && Date.now() - lastLoginAt < 1000 * 60 * 30) {
@@ -44,16 +44,17 @@ export async function getApi() {
   return apiInstance;
 }
 
-export async function getApiForSession(session_key) {
-  const cache = perSessionCache.get(String(session_key));
+export async function getApiForSession(session_key, account_id = undefined) {
+  const cacheKey = `${String(session_key)}::${account_id ? String(account_id) : ''}`;
+  const cache = perSessionCache.get(cacheKey);
   if (cache && cache.api && Date.now() - cache.lastLoginAt < 1000 * 60 * 30) {
     return cache.api;
   }
 
   const { Zalo } = require('zca-js');
-  const row = await sessionRepo.getBySessionKey(String(session_key));
+  const row = await sessionRepo.getBySessionKey(String(session_key), account_id);
   if (!row || !row.cookies_json || !row.imei || !row.user_agent) {
-    throw new Error('Session not found or missing credentials for the specified session_key');
+    throw new Error('Session not found or missing credentials for the specified session_key/account_id');
   }
   const zalo = new Zalo({ checkUpdate: false, imageMetadataGetter });
   const api = await zalo.login({
@@ -62,7 +63,7 @@ export async function getApiForSession(session_key) {
     userAgent: row.user_agent,
     language: row.language || 'vi',
   });
-  perSessionCache.set(String(session_key), { api, lastLoginAt: Date.now() });
+  perSessionCache.set(cacheKey, { api, lastLoginAt: Date.now() });
   return api;
 }
 
