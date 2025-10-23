@@ -39,8 +39,8 @@ export async function upsertIgnored(req, res, next) {
       return res.status(400).json({ ok: false, error: 'session_key, account_id and thread_id are required' });
     }
     // 1) Call external APIs first; only save to DB if all succeed
-    const { customBaseUrl, mobileBaseUrl } = config.chatbot || {};
-    const requests = [];
+    // const { customBaseUrl, mobileBaseUrl } = config.chatbot || {};
+    // const requests = [];
 
     // Helper for logging request/response
     const callAndLog = async (label, url, options) => {
@@ -59,32 +59,32 @@ export async function upsertIgnored(req, res, next) {
       }
     };
 
-    // product control-bot
-    if (customBaseUrl && session_key) {
-      const url = new URL(`/control-bot/${encodeURIComponent(session_key)}?session_id=${encodeURIComponent(thread_id)}`, customBaseUrl).toString();
-      requests.push(callAndLog('product control-bot', url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'stop' }),
-      }));
-    }
+    // // product control-bot
+    // if (customBaseUrl && session_key) {
+    //   const url = new URL(`/control-bot/${encodeURIComponent(session_key)}?session_id=${encodeURIComponent(thread_id)}`, customBaseUrl).toString();
+    //   requests.push(callAndLog('product control-bot', url, {
+    //     method: 'POST',
+    //     headers: { 'Content-Type': 'application/json' },
+    //     body: JSON.stringify({ command: 'stop' }),
+    //   }));
+    // }
 
-    // mobile stop
-    if (mobileBaseUrl && session_key) {
-      const url = new URL(`/stop/${encodeURIComponent(session_key)}/${encodeURIComponent(thread_id)}`, mobileBaseUrl).toString();
-      requests.push(callAndLog('mobile stop', url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thread_name: name || thread_id }),
-      }));
-    }
+    // // mobile stop
+    // if (mobileBaseUrl && session_key) {
+    //   const url = new URL(`/stop/${encodeURIComponent(session_key)}/${encodeURIComponent(thread_id)}`, mobileBaseUrl).toString();
+    //   requests.push(callAndLog('mobile stop', url, {
+    //     method: 'POST',
+    //     headers: { 'Content-Type': 'application/json' },
+    //     body: JSON.stringify({ thread_name: name || thread_id }),
+    //   }));
+    // }
 
-    try {
-      await Promise.all(requests);
-    } catch (e) {
-      // Any external failure: do not persist
-      return res.status(502).json({ ok: false, error: 'External sync failed. Not saved.' });
-    }
+    // try {
+    //   await Promise.all(requests);
+    // } catch (e) {
+    //   // Any external failure: do not persist
+    //   return res.status(502).json({ ok: false, error: 'External sync failed. Not saved.' });
+    // }
 
     // 2) Persist only if sync above succeeded
     const created = await repo.upsert({ session_key, owner_account_id: account_id, thread_id, name, user_id });
@@ -137,31 +137,31 @@ export async function deleteIgnored(req, res, next) {
       }
     };
 
-    const requests = [];
-    // Product: resume/start bot for this session
-    if (customBaseUrl && session_key) {
-      const url = new URL(`/control-bot/${encodeURIComponent(session_key)}`, customBaseUrl).toString() + `?session_id=${encodeURIComponent(session_key)}`;
-      requests.push(callAndLog('product control-bot (start)', url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'start' }),
-      }));
-    }
-    // Mobile: start bot for specific thread
-    if (mobileBaseUrl && session_key) {
-      const url = new URL(`/start/${encodeURIComponent(session_key)}/${encodeURIComponent(thread_id)}`, mobileBaseUrl).toString();
-      requests.push(callAndLog('mobile start', url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thread_name: name }),
-      }));
-    }
+    // const requests = [];
+    // // Product: resume/start bot for this session
+    // if (customBaseUrl && session_key) {
+    //   const url = new URL(`/control-bot/${encodeURIComponent(session_key)}`, customBaseUrl).toString() + `?session_id=${encodeURIComponent(session_key)}`;
+    //   requests.push(callAndLog('product control-bot (start)', url, {
+    //     method: 'POST',
+    //     headers: { 'Content-Type': 'application/json' },
+    //     body: JSON.stringify({ command: 'start' }),
+    //   }));
+    // }
+    // // Mobile: start bot for specific thread
+    // if (mobileBaseUrl && session_key) {
+    //   const url = new URL(`/start/${encodeURIComponent(session_key)}/${encodeURIComponent(thread_id)}`, mobileBaseUrl).toString();
+    //   requests.push(callAndLog('mobile start', url, {
+    //     method: 'POST',
+    //     headers: { 'Content-Type': 'application/json' },
+    //     body: JSON.stringify({ thread_name: name }),
+    //   }));
+    // }
 
-    try {
-      await Promise.all(requests);
-    } catch (e) {
-      return res.status(502).json({ ok: false, error: 'External sync failed. Not deleted.' });
-    }
+    // try {
+    //   await Promise.all(requests);
+    // } catch (e) {
+    //   return res.status(502).json({ ok: false, error: 'External sync failed. Not deleted.' });
+    // }
 
     const ok = await repo.removeById(id);
     if (!ok) return res.status(404).json({ ok: false, error: 'Not found' });
