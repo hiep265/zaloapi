@@ -486,6 +486,18 @@ export async function getSessionStatus(req, res, next) {
   }
 }
 
+// GET /api/auth/sessions?key=...
+export async function listSessions(req, res, next) {
+  try {
+    const key = typeof req.query?.key === 'string' ? req.query.key.trim() : null;
+    if (!key) return res.status(400).json({ error: 'Missing session key' });
+    const items = await sessionRepo.listBySessionKey(key, true);
+    res.json({ ok: true, items });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // POST /api/auth/logout -> stop listener and deactivate session
 // Accepts optional session key in body or query (?key=...). If missing, will attempt to logout the latest active session.
 export async function logoutSession(req, res, next) {
@@ -493,11 +505,14 @@ export async function logoutSession(req, res, next) {
     const keyFromQuery = typeof req.query?.key === 'string' ? req.query.key.trim() : null;
     const keyFromBody = typeof req.body?.key === 'string' ? req.body.key.trim() : null;
     const key = keyFromBody || keyFromQuery || null;
+    const accountIdFromQuery = typeof req.query?.account_id === 'string' ? req.query.account_id.trim() : null;
+    const accountIdFromBody = typeof req.body?.account_id === 'string' ? req.body.account_id.trim() : null;
+    const targetAccountId = accountIdFromBody || accountIdFromQuery || null;
 
     // Resolve target session
     let session = null;
     if (key) {
-      session = await sessionRepo.getBySessionKey(key);
+      session = await sessionRepo.getBySessionKey(key, targetAccountId || undefined);
       if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
     } else {
       session = await sessionRepo.getActiveSession();
@@ -508,16 +523,15 @@ export async function logoutSession(req, res, next) {
 
     // Stop listeners gracefully (by both identifiers to be safe)
     try { await stopListener(String(session_key)); } catch (_) {}
-    if (account_id) {
-      try { await stopListener(String(account_id)); } catch (_) {}
-    }
+    const stopAcc = targetAccountId || account_id;
+    if (stopAcc) { try { await stopListener(String(stopAcc)); } catch (_) {} }
 
     // Deactivate the session record
-    try { await sessionRepo.deleteSessionByKey(session_key); } catch (e) {
+    try { await sessionRepo.deleteSessionByKey(session_key, targetAccountId || undefined); } catch (e) {
       return res.status(500).json({ ok: false, error: 'Failed to deactivate session', detail: e?.message || String(e) });
     }
 
-    return res.json({ ok: true, session_key, account_id: account_id || null });
+    return res.json({ ok: true, session_key, account_id: (targetAccountId || account_id || null) });
   } catch (err) {
     next(err);
   }

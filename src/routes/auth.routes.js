@@ -100,6 +100,23 @@ router.get('/session/:key', authController.getSessionStatus);
 
 /**
  * @openapi
+ * /api/auth/sessions:
+ *   get:
+ *     summary: Liệt kê tất cả các phiên theo session_key
+ *     parameters:
+ *       - in: query
+ *         name: key
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Danh sách phiên
+ */
+router.get('/sessions', authController.listSessions);
+
+/**
+ * @openapi
  * /api/auth/logout:
  *   post:
  *     summary: Đăng xuất khỏi phiên Zalo

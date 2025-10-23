@@ -48,6 +48,17 @@ export async function listActiveSessions() {
   return res.rows || [];
 }
 
+export async function listBySessionKey(session_key, activeOnly = true) {
+  const res = await db.query(
+    `SELECT id, session_key, account_id, is_active, updated_at, chatbot_priority
+     FROM sessions
+     WHERE session_key = $1 ${activeOnly ? 'AND is_active = true' : ''}
+     ORDER BY updated_at DESC`,
+    [session_key]
+  );
+  return res.rows || [];
+}
+
 export async function upsertActiveSession({ account_id, cookies_json, imei, user_agent, language, api_key }) {
   // Simple strategy: deactivate others and insert a new active session
   await db.query('UPDATE sessions SET is_active = false WHERE is_active = true');
@@ -184,6 +195,7 @@ export async function setChatbotPriority(session_key, account_id, priority) {
 export default {
   getActiveSession,
   listActiveSessions,
+  listBySessionKey,
   upsertActiveSession,
   getBySessionKey,
   upsertBySessionKey,
