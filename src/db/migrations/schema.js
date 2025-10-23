@@ -13,6 +13,7 @@ export async function runMigrations(client) {
     CREATE TABLE IF NOT EXISTS sessions (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       account_id TEXT,
+      display_name TEXT,
       cookies_json JSONB,
       imei TEXT,
       user_agent TEXT,
@@ -38,6 +39,12 @@ export async function runMigrations(client) {
       WHERE table_name='sessions' AND column_name='api_key'
     ) THEN
       ALTER TABLE sessions ADD COLUMN api_key TEXT;
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name='sessions' AND column_name='display_name'
+    ) THEN
+      ALTER TABLE sessions ADD COLUMN display_name TEXT;
     END IF;
     IF NOT EXISTS (
       SELECT 1 FROM information_schema.columns
