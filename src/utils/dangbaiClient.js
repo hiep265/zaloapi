@@ -99,7 +99,7 @@ export async function chatWithDangbaiLinhKien({ message, model_choice = 'gemini'
  * Body: { query: string, stream?: boolean, llm_provider?: 'google_genai' | 'openai', thread_id?: string }
  * Auth: X-API-Key header (user's API key saved with the session)
  */
-export async function chatWithMobileChatbot({ query, stream = false, llm_provider = 'google_genai', apiKey, thread_id, image_url, image_base64 }) {
+export async function chatWithMobileChatbot({ query, stream = false, llm_provider = 'google_genai', apiKey, thread_id, image_url, image_base64, platform = 'zalo' }) {
   const url = `${DANGBAI_BASE_URL}/api/v1/chatbot/chat`;
   const controller = new AbortController();
   let timeoutId = null;
@@ -112,7 +112,7 @@ export async function chatWithMobileChatbot({ query, stream = false, llm_provide
     // Add timeout to avoid hanging requests
     timeoutId = setTimeout(() => controller.abort(), 80000);
 
-    const body = { query: String(query || ''), stream: Boolean(stream), llm_provider, thread_id };
+    const body = { query: String(query || ''), stream: Boolean(stream), llm_provider, thread_id, platform };
     if (image_url) body.image_url = String(image_url);
     if (image_base64) body.image_base64 = String(image_base64);
 
