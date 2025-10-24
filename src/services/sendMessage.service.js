@@ -77,9 +77,10 @@ export async function sendLink({ api, threadId, link, msg, type = ThreadType.Use
  * @param {string} [opts.apiBaseUrl=process.env.DANGBAI_BASE_URL||'http://localhost:8000']
  * @param {string} [opts.apiKey=process.env.DANGBAI_API_KEY]
  * @param {string} [opts.bearer=process.env.DANGBAI_BEARER]
+ * @param {string} [opts.platform='zalo'] platform name for server-side gating
  * @returns {Promise<object|null>} response json or null
  */
-export async function sendTextViaDangbaiBackend({ threadId, msg, apiBaseUrl, apiKey, bearer } = {}) {
+export async function sendTextViaDangbaiBackend({ threadId, msg, apiBaseUrl, apiKey, bearer, platform = 'zalo' } = {}) {
   try {
     const base = apiBaseUrl || process.env.DANGBAI_BASE_URL || 'http://localhost:8000';
     const url = `${base.replace(/\/$/, '')}/api/v1/zalo/send-message`;
@@ -91,7 +92,7 @@ export async function sendTextViaDangbaiBackend({ threadId, msg, apiBaseUrl, api
     const res = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ thread_id: String(threadId || ''), message: String(msg || '') })
+      body: JSON.stringify({ thread_id: String(threadId || ''), message: String(msg || ''), platform: String(platform || '') })
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
