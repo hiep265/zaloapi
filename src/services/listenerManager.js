@@ -2,7 +2,7 @@ import { Zalo, ThreadType } from 'zca-js';
 import { listActiveSessions, setAccountIdBySessionKey, deleteSessionByKey, getBySessionKey } from '../repositories/session.repository.js';
 import { saveIncomingMessage, markMessageReplied } from '../repositories/message.repository.js';
 import { acquireLock, releaseLock, renewLock } from '../utils/lock.js';
-import { chatWithDangbaiLinhKien, chatWithMobileChatbot, postToDangbaiAuth } from '../utils/dangbaiClient.js';
+import { chatWithDangbaiLinhKien, chatWithMobileChatbot, postToDangbaiAuth, getMobileChatHistory } from '../utils/dangbaiClient.js';
 import { sendTextMessage, sendLink } from './sendMessage.service.js';
 import { detectLinks } from '../utils/messageUtils.js';
 import { list as listIgnored } from '../repositories/ignoredConversations.repository.js';
@@ -620,7 +620,12 @@ export async function startListenerForSession(sessionRow) {
                 image_url: imageUrlForBot || undefined,
               });
             } else {
-              // Default or 'mobile' -> call mobile chatbot
+              let history = [];
+              try {
+                history = await getMobileChatHistory({ thread_id: threadId, limit: 20, apiKey: effectiveApiKey });
+                if (!Array.isArray(history)) history = [];
+              } catch (_) { history = []; }
+
               resp = await chatWithMobileChatbot({
                 query: isText ? content : (msgForBot || ''),
                 stream: false,
@@ -628,6 +633,7 @@ export async function startListenerForSession(sessionRow) {
                 apiKey: effectiveApiKey,
                 thread_id: threadId,
                 image_url: imageUrlForBot || undefined,
+                history,
               });
             }
 

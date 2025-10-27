@@ -93,13 +93,38 @@ export async function chatWithDangbaiLinhKien({ message, model_choice = 'gemini'
   }
 }
 
+export async function getMobileChatHistory({ thread_id, limit = 20, apiKey }) {
+  if (!thread_id) return [];
+  const url = `${DANGBAI_BASE_URL}/api/v1/chatbot/chat-history/${encodeURIComponent(String(thread_id))}?limit=${Number(limit) || 20}`;
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    const keyToUse = apiKey || DANGBAI_API_KEY;
+    if (keyToUse) headers['X-API-Key'] = keyToUse;
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Dangbai GET chat-history failed ${res.status}: ${text}`);
+    }
+    const data = await res.json().catch(() => ({}));
+    const payload = (data && typeof data === 'object' && data.data) ? data.data : data;
+    if (!Array.isArray(payload)) return [];
+    return payload
+      .slice(-Number(limit || 20))
+      .map((it) => ({ role: String(it.role || ''), message: String(it.message || '') }))
+      .filter((it) => it.role && typeof it.message === 'string');
+  } catch (e) {
+    console.error('[dangbaiClient] getMobileChatHistory error', e.message);
+    return [];
+  }
+}
+
 /**
  * Call Dangbai backend mobile chatbot API
  * Endpoint: POST /api/v1/chatbot/chat
  * Body: { query: string, stream?: boolean, llm_provider?: 'google_genai' | 'openai', thread_id?: string }
  * Auth: X-API-Key header (user's API key saved with the session)
  */
-export async function chatWithMobileChatbot({ query, stream = false, llm_provider = 'google_genai', apiKey, thread_id, image_url, image_base64, platform = 'zalo' }) {
+export async function chatWithMobileChatbot({ query, stream = false, llm_provider = 'google_genai', apiKey, thread_id, image_url, image_base64, platform = 'zalo', history }) {
   const url = `${DANGBAI_BASE_URL}/api/v1/chatbot/chat`;
   const controller = new AbortController();
   let timeoutId = null;
@@ -115,6 +140,7 @@ export async function chatWithMobileChatbot({ query, stream = false, llm_provide
     const body = { query: String(query || ''), stream: Boolean(stream), llm_provider, thread_id, platform };
     if (image_url) body.image_url = String(image_url);
     if (image_base64) body.image_base64 = String(image_base64);
+    if (Array.isArray(history)) body.history = history;
 
     const res = await fetch(url, {
       method: 'POST',
@@ -138,4 +164,4 @@ export async function chatWithMobileChatbot({ query, stream = false, llm_provide
   }
 }
 
-export default { postToDangbai, postToDangbaiAuth, chatWithDangbaiLinhKien, chatWithMobileChatbot };
+export default { postToDangbai, postToDangbaiAuth, chatWithDangbaiLinhKien, chatWithMobileChatbot, getMobileChatHistory };
