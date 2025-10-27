@@ -2,7 +2,7 @@ import { ThreadType } from 'zca-js';
 import { getApiForSession } from '../services/zalo.service.js';
 import * as staffRepo from '../repositories/staff.repository.js';
 import * as sessionRepo from '../repositories/session.repository.js';
-import { resolveConversationName } from '../repositories/conversation.repository.js';
+import { resolveConversationName, resolvePeerUserIdByThread } from '../repositories/conversation.repository.js';
 import { sendTextMessage, sendImageMessage } from '../services/sendMessage.service.js';
 import sharp from 'sharp';
 import fs from 'fs';
@@ -29,12 +29,29 @@ export async function sendImageIfPermitted(req, res, next) {
       return res.status(400).json({ ok: false, error: 'Missing image_url or file_path' });
     }
     const api = await getApiForSession(String(session_key), account_id || undefined);
+    let threadType = ThreadType.User;
+    try {
+      const gi = await api.getGroupInfo(String(thread_id));
+      const map = gi && gi.gridInfoMap ? gi.gridInfoMap : null;
+      if (map && Object.prototype.hasOwnProperty.call(map, String(thread_id))) {
+        threadType = ThreadType.Group;
+      }
+    } catch (_) {}
+    // Determine correct target id: for user -> need counterpart uid, for group -> thread_id is OK
+    let targetId = String(thread_id);
+    if (threadType === ThreadType.User) {
+      try {
+        const uid = await resolvePeerUserIdByThread(String(session_key), String(thread_id), account_id || null);
+        if (uid && String(uid).trim()) targetId = String(uid);
+      } catch (_) {}
+    }
     const result = await sendImageMessage({
       api,
-      threadId: String(thread_id),
+      threadId: targetId,
       imageUrl: image_url,
       filePath: file_path,
       msg: typeof message === 'string' ? message : undefined,
+      type: threadType,
     });
 
     if (!result) {
@@ -86,7 +103,22 @@ export async function sendImageFileIfPermitted(req, res, next) {
         attLen: Array.isArray(content.attachments) ? content.attachments.length : undefined,
         att0Type: Array.isArray(content.attachments) ? typeof content.attachments[0] : undefined
       });
-      const result = await api.sendMessage(content, String(thread_id), ThreadType.User);
+      let threadType = ThreadType.User;
+      try {
+        const gi = await api.getGroupInfo(String(thread_id));
+        const map = gi && gi.gridInfoMap ? gi.gridInfoMap : null;
+        if (map && Object.prototype.hasOwnProperty.call(map, String(thread_id))) {
+          threadType = ThreadType.Group;
+        }
+      } catch (_) {}
+      let targetId = String(thread_id);
+      if (threadType === ThreadType.User) {
+        try {
+          const uid = await resolvePeerUserIdByThread(String(session_key), String(thread_id), account_id || null);
+          if (uid && String(uid).trim()) targetId = String(uid);
+        } catch (_) {}
+      }
+      const result = await api.sendMessage(content, targetId, threadType);
       if (!result) {
         return res.status(500).json({ ok: false, error: 'Failed to send image' });
       }
@@ -232,7 +264,22 @@ export async function sendMessageIfPermitted(req, res, next) {
 
     // Send via Zalo API
     const api = await getApiForSession(String(session_key), account_id || undefined);
-    const result = await sendTextMessage({ api, threadId: String(thread_id), msg: finalMsg });
+    let threadType = ThreadType.User;
+    try {
+      const gi = await api.getGroupInfo(String(thread_id));
+      const map = gi && gi.gridInfoMap ? gi.gridInfoMap : null;
+      if (map && Object.prototype.hasOwnProperty.call(map, String(thread_id))) {
+        threadType = ThreadType.Group;
+      }
+    } catch (_) {}
+    let targetId = String(thread_id);
+    if (threadType === ThreadType.User) {
+      try {
+        const uid = await resolvePeerUserIdByThread(String(session_key), String(thread_id), account_id || null);
+        if (uid && String(uid).trim()) targetId = String(uid);
+      } catch (_) {}
+    }
+    const result = await sendTextMessage({ api, threadId: targetId, msg: finalMsg, type: threadType });
 
     if (!result) {
       return res.status(500).json({ ok: false, error: 'Failed to send message' });
