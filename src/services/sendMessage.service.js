@@ -15,7 +15,7 @@ import fs from 'fs';
  * @param {ThreadType} [params.type=ThreadType.User] - Thread type (User/Group)
  * @returns {Promise<import('zca-js').SendMessageResponse|null>} response or null on error
  */
-export async function sendTextMessage({ api, threadId, msg, type = ThreadType.User }) {
+export async function sendTextMessage({ api, threadId, msg, type = ThreadType.User, quote }) {
   if (!api || typeof api.sendMessage !== 'function') {
     console.warn('[sendMessage] invalid api instance or sendMessage not available');
     return null;
@@ -25,7 +25,7 @@ export async function sendTextMessage({ api, threadId, msg, type = ThreadType.Us
     return null;
   }
   try {
-    const content = { msg: String(msg) };
+    const content = { msg: String(msg), ...(quote ? { quote } : {}) };
     const res = await api.sendMessage(content, String(threadId), type);
     return res || null;
   } catch (e) {

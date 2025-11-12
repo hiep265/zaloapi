@@ -246,7 +246,7 @@ export async function createManagersGroup(req, res, next) {
  */
 export async function sendMessageIfPermitted(req, res, next) {
   try {
-    const { session_key, account_id, thread_id, message } = req.body || {};
+    const { session_key, account_id, thread_id, message, quote } = req.body || {};
     if (!session_key || !String(session_key).trim()) {
       return res.status(400).json({ ok: false, error: 'Missing session_key' });
     }
@@ -279,7 +279,7 @@ export async function sendMessageIfPermitted(req, res, next) {
         if (uid && String(uid).trim()) targetId = String(uid);
       } catch (_) {}
     }
-    const result = await sendTextMessage({ api, threadId: targetId, msg: finalMsg, type: threadType });
+    const result = await sendTextMessage({ api, threadId: targetId, msg: finalMsg, type: threadType, ...(quote ? { quote } : {}) });
 
     if (!result) {
       return res.status(500).json({ ok: false, error: 'Failed to send message' });

@@ -50,7 +50,7 @@ export async function postToDangbaiAuth(path, body, apiKey) {
   }
 }
 
-export async function chatWithDangbaiLinhKien({ message, model_choice = 'gemini', session_id = 'default', apiKey, image_url }) {
+export async function chatWithDangbaiLinhKien({ message, model_choice = 'gemini', session_id = 'default', apiKey, image_url, image_urls }) {
   const url = `${DANGBAI_BASE_URL}/api/v1/chatbot-linhkien/chat`;
   // Prepare abort controller outside try so finally can access it
   const controller = new AbortController();
@@ -62,6 +62,12 @@ export async function chatWithDangbaiLinhKien({ message, model_choice = 'gemini'
     params.append('model_choice', model_choice || 'gemini');
     params.append('session_id', session_id || 'default');
     if (image_url) params.append('image_url', String(image_url));
+    try {
+      if (Array.isArray(image_urls) && image_urls.length > 0) {
+        const jsonStr = JSON.stringify(image_urls.map(String));
+        params.append('image_urls', jsonStr);
+      }
+    } catch (_) {}
 
     // Only send X-API-Key (no Bearer)
     const headers = { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' };
@@ -124,7 +130,7 @@ export async function getMobileChatHistory({ thread_id, limit = 20, apiKey }) {
  * Body: { query: string, stream?: boolean, llm_provider?: 'google_genai' | 'openai', thread_id?: string }
  * Auth: X-API-Key header (user's API key saved with the session)
  */
-export async function chatWithMobileChatbot({ query, stream = false, llm_provider = 'google_genai', apiKey, thread_id, image_url, image_base64, platform = 'zalo', history }) {
+export async function chatWithMobileChatbot({ query, stream = false, llm_provider = 'google_genai', apiKey, thread_id, image_url, image_urls, image_base64, platform = 'zalo', history }) {
   const url = `${DANGBAI_BASE_URL}/api/v1/chatbot/chat`;
   const controller = new AbortController();
   let timeoutId = null;
@@ -139,6 +145,7 @@ export async function chatWithMobileChatbot({ query, stream = false, llm_provide
 
     const body = { query: String(query || ''), stream: Boolean(stream), llm_provider, thread_id, platform };
     if (image_url) body.image_url = String(image_url);
+    if (Array.isArray(image_urls) && image_urls.length > 0) body.image_urls = image_urls.map(String);
     if (image_base64) body.image_base64 = String(image_base64);
     if (Array.isArray(history)) body.history = history;
 

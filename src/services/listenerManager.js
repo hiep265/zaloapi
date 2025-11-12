@@ -100,6 +100,323 @@ async function getSuppressMs(session_key) {
   }
 }
 
+const chatbotQueue = [];
+let chatbotQueueRunning = 0;
+const CHATBOT_QUEUE_CONCURRENCY = 1;
+
+function enqueueChatbotTask(task) {
+  try {
+    chatbotQueue.push(task);
+    try {
+      const info = {
+        session_key: String(task?.session_key || ''),
+        owner_account_id: String(task?.accId || task?.account_id || ''),
+        threadId: String(task?.threadId || ''),
+        isText: Boolean(task?.isText),
+        isPhoto: Boolean(task?.isPhoto),
+        contentLen: typeof task?.content === 'string' ? task.content.length : 0,
+        msgId: task?.msgId || null,
+        msgIdsCount: Array.isArray(task?.msgIds) ? task.msgIds.length : 0,
+        imageUrlsCount: Array.isArray(task?.imageUrls) ? task.imageUrls.length : 0,
+        queueSize: chatbotQueue.length,
+      };
+      console.log('[Listener][Queue] enqueued task', info);
+    } catch (_) {}
+    setImmediate(runNextChatbotTask);
+  } catch (_) {}
+}
+
+async function runNextChatbotTask() {
+  if (chatbotQueueRunning >= CHATBOT_QUEUE_CONCURRENCY) return;
+  const task = chatbotQueue.shift();
+  if (!task) return;
+  const taskInfo = {
+    session_key: String(task?.session_key || ''),
+    owner_account_id: String(task?.accId || task?.account_id || ''),
+    threadId: String(task?.threadId || ''),
+    isText: Boolean(task?.isText),
+    isPhoto: Boolean(task?.isPhoto),
+    contentLen: typeof task?.content === 'string' ? task.content.length : 0,
+    msgId: task?.msgId || null,
+    msgIdsCount: Array.isArray(task?.msgIds) ? task.msgIds.length : 0,
+    imageUrlsCount: Array.isArray(task?.imageUrls) ? task.imageUrls.length : 0,
+  };
+  chatbotQueueRunning++;
+  try {
+    try {
+      console.log('[Listener][Queue] start processing', {
+        ...taskInfo,
+        running: chatbotQueueRunning,
+        queueSize: chatbotQueue.length,
+      });
+    } catch (_) {}
+    await processChatbotAutoReplyTask(task);
+  } catch (e) {
+    console.error('[Listener] auto-reply error', e?.message || e);
+  } finally {
+    chatbotQueueRunning--;
+    try {
+      console.log('[Listener][Queue] finished processing', {
+        ...taskInfo,
+        running: chatbotQueueRunning,
+        queueSize: chatbotQueue.length,
+      });
+    } catch (_) {}
+    setImmediate(runNextChatbotTask);
+  }
+}
+
+const AGGREGATION_WINDOW_MS = 30000;
+const threadAggregations = new Map();
+
+function formatAggText({ isText, content, d }) {
+  if (isText) return String(content || '');
+  const title = d?.content?.title || '';
+  const description = d?.content?.description || '';
+  const link = d?.content?.href || d?.content?.thumb || '';
+  return [title, description, link].filter(Boolean).join('\n');
+}
+
+function addToAggregation({ api, sessionRow, session_key, accId, account_id, threadId, threadType, isText, isPhoto, content, d, msgId, api_key }) {
+  const key = `${session_key}:${accId || account_id || ''}:${threadId}`;
+  const itemText = formatAggText({ isText, content, d });
+  const itemImageUrls = [];
+  try {
+    if (isPhoto) {
+      const u = d?.content?.href || d?.content?.thumb || '';
+      if (u) itemImageUrls.push(String(u));
+    }
+  } catch (_) {}
+  const existing = threadAggregations.get(key);
+  const now = Date.now();
+  if (existing) {
+    existing.items.push({ text: itemText, msgId, imageUrls: itemImageUrls });
+    existing.last = now;
+    return;
+  }
+  const agg = { items: [{ text: itemText, msgId, imageUrls: itemImageUrls }], created: now, last: now, timer: null };
+  const timer = setTimeout(() => {
+    try {
+      threadAggregations.delete(key);
+      const aggregatedText = agg.items.map(it => it.text).filter(Boolean).join('\n');
+      const msgIds = agg.items.map(it => it.msgId).filter(Boolean);
+      const imageUrls = (() => {
+        try {
+          const set = new Set();
+          for (const it of agg.items) {
+            const arr = Array.isArray(it.imageUrls) ? it.imageUrls : [];
+            for (const u of arr) {
+              if (u && !set.has(u)) set.add(u);
+            }
+          }
+          return Array.from(set);
+        } catch (_) { return []; }
+      })();
+      try {
+        console.log('[Listener][Image] aggregated', {
+          session_key,
+          threadId,
+          imageUrlsCount: imageUrls.length,
+          imageUrls,
+        });
+      } catch (_) {}
+      enqueueChatbotTask({
+        api,
+        sessionRow,
+        session_key,
+        accId,
+        account_id,
+        threadId,
+        threadType,
+        isText: true,
+        isPhoto: imageUrls.length > 0,
+        content: aggregatedText,
+        d: null,
+        msgId: msgIds[0] || null,
+        msgIds,
+        imageUrls,
+        api_key,
+      });
+    } catch (_) {}
+  }, AGGREGATION_WINDOW_MS);
+  agg.timer = timer;
+  threadAggregations.set(key, agg);
+}
+
+async function processChatbotAutoReplyTask({ api, sessionRow, session_key, accId, account_id, threadId, threadType, isText, isPhoto, content, d, msgId, msgIds, imageUrls, api_key }) {
+  try {
+    // Fetch latest session row to avoid stale data (priority/api_key may change at runtime)
+    let latest = null;
+    try { latest = await getBySessionKey(session_key, accId || account_id || undefined); } catch (_) { latest = null; }
+    const effectivePriority = (latest?.chatbot_priority || sessionRow?.chatbot_priority || 'mobile').toLowerCase();
+    const effectiveApiKey = latest?.api_key || api_key || undefined;
+
+    // Pre-check: skip auto-reply if this thread is in user's ignored conversations
+    try {
+      const ignoreRows = await listIgnored({
+        session_key,
+        owner_account_id: accId || account_id || null,
+        thread_id: String(threadId || ''),
+        user_id: latest?.user_id || undefined,
+        limit: 1,
+        offset: 0,
+      });
+      if (Array.isArray(ignoreRows) && ignoreRows.length > 0) {
+        console.log('[Listener] thread is ignored; skip auto-reply', { session_key, threadId });
+        return;
+      }
+    } catch (ignErr) {
+      console.warn('[Listener] ignore-check failed:', ignErr?.message || ignErr);
+    }
+
+    // Re-check suppression inside worker to avoid race conditions (scoped by session + owner account)
+    try {
+      const threadKeyStr = String(threadId || '');
+      if (threadKeyStr) {
+        const suppressKey = `${session_key}:${accId || account_id || ''}:${threadKeyStr}`;
+        const until = threadSuppression.get(suppressKey);
+        if (until && Date.now() < until) {
+          console.log('[Listener] thread suppressed (worker); skip auto-reply', { session_key, owner_account_id: accId || account_id || '', threadId: threadKeyStr, until });
+          return;
+        }
+      }
+    } catch (_) { /* ignore */ }
+
+    // Prepare payload for chatbot
+    const msgForBot = (typeof content === 'string' && content.length > 0)
+      ? String(content)
+      : (isText ? String(content || '') : [d?.content?.title, d?.content?.description].filter(Boolean).join('\n'));
+    const imageUrlForBot = (Array.isArray(imageUrls) && imageUrls.length > 0)
+      ? imageUrls[0]
+      : (isPhoto ? (d?.content?.href || d?.content?.thumb || null) : null);
+
+    try {
+      console.log('[Listener][Image] chatbot payload', {
+        session_key,
+        threadId,
+        image_url: imageUrlForBot || null,
+        image_urls: Array.isArray(imageUrls) ? imageUrls : [],
+      });
+    } catch (_) {}
+
+    let resp = null;
+    if (effectivePriority === 'custom') {
+      // Call custom chatbot (linhkien)
+      resp = await chatWithDangbaiLinhKien({
+        message: msgForBot,
+        model_choice: 'gemini',
+        session_id: threadId,
+        apiKey: effectiveApiKey,
+        image_url: imageUrlForBot || undefined,
+        image_urls: Array.isArray(imageUrls) && imageUrls.length > 0 ? imageUrls : undefined,
+      });
+    } else {
+      let history = [];
+      try {
+        history = await getMobileChatHistory({ thread_id: threadId, limit: 10, apiKey: effectiveApiKey });
+        if (!Array.isArray(history)) history = [];
+      } catch (_) { history = []; }
+
+      resp = await chatWithMobileChatbot({
+        query: isText ? content : (msgForBot || ''),
+        stream: false,
+        llm_provider: 'google_genai',
+        apiKey: effectiveApiKey,
+        thread_id: threadId,
+        image_url: imageUrlForBot || undefined,
+        image_urls: Array.isArray(imageUrls) && imageUrls.length > 0 ? imageUrls : undefined,
+        history,
+      });
+    }
+
+    if (!resp) return;
+
+    let replyMsg = null;
+    if (typeof resp === 'string') {
+      replyMsg = resp.trim();
+    } else if (typeof resp?.reply === 'string') {
+      replyMsg = resp.reply.trim();
+    } else if (typeof resp?.data?.answer === 'string') {
+      replyMsg = resp.data.answer.trim();
+    } else if (typeof resp?.message === 'string') {
+      replyMsg = resp.message.trim();
+    } else if (typeof resp?.response === 'string') {
+      // Mobile chatbot response shape
+      replyMsg = resp.response.trim();
+    } else if (typeof resp?.text === 'string') {
+      replyMsg = resp.text.trim();
+    } else if (resp && typeof resp === 'object') {
+      try {
+        const s = JSON.stringify(resp);
+        replyMsg = s.length > 1800 ? s.slice(0, 1800) + '…' : s;
+      } catch (_) {}
+    }
+
+    if (!replyMsg) return;
+    // Limit message length to avoid platform limits
+    if (replyMsg.length > 2000) replyMsg = replyMsg.slice(0, 2000);
+
+    let sendRes = null;
+    const images = Array.isArray(resp?.images) ? resp.images : [];
+    // Prefer structured images from response if provided
+    if (images.length > 0) {
+      if (replyMsg) {
+        // Send the reply text first (once), but strip any links from it
+        const { textWithoutLinks } = detectLinks(replyMsg);
+        if (textWithoutLinks) {
+          sendRes = await sendTextMessage({ api, threadId, msg: textWithoutLinks, type: threadType });
+        }
+      }
+      for (const img of images) {
+        try {
+          const linkUrl = img?.image_url || img?.url || '';
+          if (!linkUrl) continue;
+          const caption = [img?.product_name, img?.product_link].filter(Boolean).join('\n');
+          const linkRes = await sendLink({ api, threadId, link: String(linkUrl), msg: caption || undefined, type: threadType });
+          if (linkRes) sendRes = linkRes;
+        } catch (e) {
+          console.warn('[Listener] send image link failed:', e?.message || String(e));
+        }
+      }
+    } else {
+      // Fallback: detect links in plain reply text, else send as text
+      const { hasLinks, links, textWithoutLinks } = detectLinks(replyMsg);
+      if (hasLinks && links.length > 0) {
+        // Send the cleaned text first (if exists), then send each link separately
+        if (textWithoutLinks && textWithoutLinks.length > 0) {
+          try {
+            const textRes = await sendTextMessage({ api, threadId, msg: textWithoutLinks, type: threadType });
+            if (textRes) sendRes = textRes;
+          } catch (_) { /* ignore */ }
+        }
+        for (const link of links) {
+          try {
+            const linkRes = await sendLink({ api, threadId, link: link, type: threadType });
+            if (linkRes) sendRes = linkRes;
+          } catch (_) { /* ignore */ }
+        }
+      } else {
+        sendRes = await sendTextMessage({ api, threadId, msg: replyMsg, type: threadType });
+      }
+    }
+
+    if (sendRes) {
+      const threadKey = `${session_key}:${accId || account_id || ''}:${threadId}`;
+      lastBotReplyTime.set(threadKey, Date.now());
+      const ownerId = accId || account_id || null;
+      if (Array.isArray(msgIds) && msgIds.length > 0) {
+        for (const mid of msgIds) {
+          try { await markMessageReplied(session_key, ownerId, mid); } catch (_) {}
+        }
+      } else if (msgId) {
+        await markMessageReplied(session_key, ownerId, msgId);
+      }
+    }
+  } catch (e) {
+    console.error('[Listener] auto-reply error', e.message || e);
+  }
+}
+
 function extractCookie(cookies_json) {
   if (!cookies_json) return null;
   try {
@@ -369,6 +686,17 @@ export async function startListenerForSession(sessionRow) {
       const ts = d.ts ? Number(d.ts) : null;
       const threadId = message?.threadId || d.threadId || null;
 
+      if (isPhoto) {
+        try {
+          console.log('[Listener][Image] inbound', {
+            session_key,
+            threadId,
+            href: d?.content?.href || null,
+            thumb: d?.content?.thumb || null,
+          });
+        } catch (_) {}
+      }
+
       // Suy luận peer_id
       // - Group: nếu không có d.groupId thì dùng threadId khi type === 1 (group)
       // - 1-1: dùng 'đối phương' làm peer_id (out -> toUid, in -> fromUid)
@@ -564,168 +892,21 @@ export async function startListenerForSession(sessionRow) {
         }
 
         // Fire-and-forget; do not block listener loop
-        (async () => {
-          try {
-            // Fetch latest session row to avoid stale data (priority/api_key may change at runtime)
-            let latest = null;
-            try { latest = await getBySessionKey(session_key, accId || account_id || undefined); } catch (_) { latest = null; }
-            const effectivePriority = (latest?.chatbot_priority || sessionRow?.chatbot_priority || 'mobile').toLowerCase();
-            const effectiveApiKey = latest?.api_key || api_key || undefined;
-
-            // Pre-check: skip auto-reply if this thread is in user's ignored conversations
-            try {
-              const ignoreRows = await listIgnored({
-                session_key,
-                owner_account_id: accId || account_id || null,
-                thread_id: String(threadId || ''),
-                user_id: latest?.user_id || undefined,
-                limit: 1,
-                offset: 0,
-              });
-              if (Array.isArray(ignoreRows) && ignoreRows.length > 0) {
-                console.log('[Listener] thread is ignored; skip auto-reply', { session_key, threadId });
-                return;
-              }
-            } catch (ignErr) {
-              console.warn('[Listener] ignore-check failed:', ignErr?.message || ignErr);
-            }
-
-            // Re-check suppression inside worker to avoid race conditions (scoped by session + owner account)
-            try {
-              const threadKeyStr = String(threadId || '');
-              if (threadKeyStr) {
-                const suppressKey = `${session_key}:${accId || account_id || ''}:${threadKeyStr}`;
-                const until = threadSuppression.get(suppressKey);
-                if (until && Date.now() < until) {
-                  console.log('[Listener] thread suppressed (worker); skip auto-reply', { session_key, owner_account_id: accId || account_id || '', threadId: threadKeyStr, until });
-                  return;
-                }
-              }
-            } catch (_) { /* ignore */ }
-
-            // Prepare payload for chatbot
-            const msgForBot = isText
-              ? String(content || '')
-              : [d?.content?.title, d?.content?.description].filter(Boolean).join('\n');
-            const imageUrlForBot = isPhoto ? (d?.content?.href || d?.content?.thumb || null) : null;
-
-            let resp = null;
-            if (effectivePriority === 'custom') {
-              // Call custom chatbot (linhkien)
-              resp = await chatWithDangbaiLinhKien({
-                message: msgForBot,
-                model_choice: 'gemini',
-                session_id: threadId,
-                apiKey: effectiveApiKey,
-                image_url: imageUrlForBot || undefined,
-              });
-            } else {
-              let history = [];
-              try {
-                history = await getMobileChatHistory({ thread_id: threadId, limit: 20, apiKey: effectiveApiKey });
-                if (!Array.isArray(history)) history = [];
-              } catch (_) { history = []; }
-
-              resp = await chatWithMobileChatbot({
-                query: isText ? content : (msgForBot || ''),
-                stream: false,
-                llm_provider: 'google_genai',
-                apiKey: effectiveApiKey,
-                thread_id: threadId,
-                image_url: imageUrlForBot || undefined,
-                history,
-              });
-            }
-
-             if (!resp) return;
-
-            // Extract text to reply from various possible response shapes
-            let replyMsg = null;
-            if (typeof resp === 'string') {
-              replyMsg = resp.trim();
-            } else if (typeof resp?.reply === 'string') {
-              replyMsg = resp.reply.trim();
-            } else if (typeof resp?.data?.answer === 'string') {
-              replyMsg = resp.data.answer.trim();
-            } else if (typeof resp?.message === 'string') {
-              replyMsg = resp.message.trim();
-            } else if (typeof resp?.response === 'string') {
-              // Mobile chatbot response shape
-              replyMsg = resp.response.trim();
-            } else if (typeof resp?.text === 'string') {
-              replyMsg = resp.text.trim();
-            } else if (resp && typeof resp === 'object') {
-              try {
-                const s = JSON.stringify(resp);
-                replyMsg = s.length > 1800 ? s.slice(0, 1800) + '…' : s;
-              } catch (_) { /* ignore */ }
-            }
-
-            if (!replyMsg) return;
-            // Limit message length to avoid platform limits
-            if (replyMsg.length > 2000) replyMsg = replyMsg.slice(0, 2000);
-
-            let sendRes = null;
-            
-            // Prefer structured images from response if provided
-            const images = Array.isArray(resp?.images) ? resp.images : [];
-            if (images.length > 0) {
-              // Send the reply text first (once), but strip any links from it
-              if (replyMsg) {
-                const { textWithoutLinks } = detectLinks(replyMsg);
-                if (textWithoutLinks) {
-                  sendRes = await sendTextMessage({ api, threadId, msg: textWithoutLinks, type: threadType });
-                }
-              }
-              for (const img of images) {
-                try {
-                  const linkUrl = img?.image_url || img?.url || '';
-                  if (!linkUrl) continue;
-                  const caption = [img?.product_name, img?.product_link].filter(Boolean).join('\n');
-                  const linkRes = await sendLink({
-                    api,
-                    threadId,
-                    link: String(linkUrl),
-                    msg: caption || undefined,
-                    type: threadType,
-                  });
-                  if (linkRes) sendRes = linkRes;
-                } catch (e) {
-                  console.warn('[Listener] send image link failed:', e?.message || String(e));
-                }
-              }
-            } else {
-              // Fallback: detect links in plain reply text, else send as text
-              const { hasLinks, links, textWithoutLinks } = detectLinks(replyMsg);
-              if (hasLinks && links.length > 0) {
-                // Send the cleaned text first (if exists), then send each link separately
-                if (textWithoutLinks && textWithoutLinks.length > 0) {
-                  try {
-                    const textRes = await sendTextMessage({ api, threadId, msg: textWithoutLinks, type: threadType });
-                    if (textRes) sendRes = textRes;
-                  } catch (_) { /* ignore */ }
-                }
-                for (const link of links) {
-                  try {
-                    const linkRes = await sendLink({ api, threadId, link: link, type: threadType });
-                    if (linkRes) sendRes = linkRes;
-                  } catch (_) { /* ignore */ }
-                }
-              } else {
-                sendRes = await sendTextMessage({ api, threadId, msg: replyMsg, type: threadType });
-              }
-            }
-            
-            if (sendRes) { 
-              // Track bot reply time for self-message detection
-              const threadKey = `${session_key}:${accId || account_id || ''}:${threadId}`;
-              lastBotReplyTime.set(threadKey, Date.now());
-              await markMessageReplied(session_key, accId || account_id || null, msgId); 
-            }
-          } catch (e) {
-            console.error('[Listener] auto-reply error', e.message || e);
-          }
-        })();
+        addToAggregation({
+          api,
+          sessionRow,
+          session_key,
+          accId,
+          account_id,
+          threadId,
+          threadType,
+          isText,
+          isPhoto,
+          content,
+          d,
+          msgId,
+          api_key,
+        });
       }
     } catch (err) {
       console.error('[Listener] handle message error', err.message || err);
