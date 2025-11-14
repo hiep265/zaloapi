@@ -170,11 +170,23 @@ const AGGREGATION_WINDOW_MS = 30000;
 const threadAggregations = new Map();
 
 function formatAggText({ isText, content, d }) {
-  if (isText) return String(content || '');
-  const title = d?.content?.title || '';
-  const description = d?.content?.description || '';
-  const link = d?.content?.href || d?.content?.thumb || '';
-  return [title, description, link].filter(Boolean).join('\n');
+  let baseText;
+  if (isText) {
+    baseText = String(content || '');
+  } else {
+    const title = d?.content?.title || '';
+    const description = d?.content?.description || '';
+    const link = d?.content?.href || d?.content?.thumb || '';
+    baseText = [title, description, link].filter(Boolean).join('\n');
+  }
+  try {
+    const q = d?.quote || null;
+    const qmsg = typeof q?.msg === 'string' ? q.msg.trim() : '';
+    if (qmsg) {
+      baseText = [baseText, qmsg].filter(Boolean).join('\n');
+    }
+  } catch (_) {}
+  return baseText;
 }
 
 function addToAggregation({ api, sessionRow, session_key, accId, account_id, threadId, threadType, isText, isPhoto, content, d, msgId, api_key }) {
@@ -185,6 +197,22 @@ function addToAggregation({ api, sessionRow, session_key, accId, account_id, thr
     if (isPhoto) {
       const u = d?.content?.href || d?.content?.thumb || '';
       if (u) itemImageUrls.push(String(u));
+    }
+  } catch (_) {}
+  try {
+    const q = d?.quote || null;
+    if (q) {
+      const attach = q.attach || q.attachment || null;
+      if (typeof attach === 'string' && attach.trim()) {
+        try {
+          const ao = JSON.parse(attach);
+          const qu = ao?.href || ao?.thumb || '';
+          if (qu) itemImageUrls.push(String(qu));
+        } catch (_) {}
+      } else if (attach && typeof attach === 'object') {
+        const qu = attach?.href || attach?.thumb || '';
+        if (qu) itemImageUrls.push(String(qu));
+      }
     }
   } catch (_) {}
   const existing = threadAggregations.get(key);
