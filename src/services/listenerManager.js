@@ -183,7 +183,7 @@ function formatAggText({ isText, content, d }) {
     const q = d?.quote || null;
     const qmsg = typeof q?.msg === 'string' ? q.msg.trim() : '';
     if (qmsg) {
-      baseText = [baseText, qmsg].filter(Boolean).join('\n');
+      baseText = [baseText, 'tin nhắn được nhắc lại', qmsg].filter(Boolean).join('\n');
     }
   } catch (_) {}
   return baseText;
