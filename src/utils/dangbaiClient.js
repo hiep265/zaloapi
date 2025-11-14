@@ -99,7 +99,7 @@ export async function chatWithDangbaiLinhKien({ message, model_choice = 'gemini'
   }
 }
 
-export async function getMobileChatHistory({ thread_id, limit = 20, apiKey }) {
+export async function getMobileChatHistory({ thread_id, limit = 10, apiKey }) {
   if (!thread_id) return [];
   const url = `${DANGBAI_BASE_URL}/api/v1/chatbot/chat-history/${encodeURIComponent(String(thread_id))}?limit=${Number(limit) || 20}`;
   try {

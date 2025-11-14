@@ -1,8 +1,8 @@
 import { Zalo, ThreadType } from 'zca-js';
 import { listActiveSessions, setAccountIdBySessionKey, deleteSessionByKey, getBySessionKey } from '../repositories/session.repository.js';
-import { saveIncomingMessage, markMessageReplied } from '../repositories/message.repository.js';
+import { saveIncomingMessage, markMessageReplied, getConversation } from '../repositories/message.repository.js';
 import { acquireLock, releaseLock, renewLock } from '../utils/lock.js';
-import { chatWithDangbaiLinhKien, chatWithMobileChatbot, postToDangbaiAuth, getMobileChatHistory } from '../utils/dangbaiClient.js';
+import { chatWithDangbaiLinhKien, chatWithMobileChatbot, postToDangbaiAuth } from '../utils/dangbaiClient.js';
 import { sendTextMessage, sendLink } from './sendMessage.service.js';
 import { detectLinks } from '../utils/messageUtils.js';
 import { list as listIgnored } from '../repositories/ignoredConversations.repository.js';
@@ -341,8 +341,27 @@ async function processChatbotAutoReplyTask({ api, sessionRow, session_key, accId
     } else {
       let history = [];
       try {
-        history = await getMobileChatHistory({ thread_id: threadId, limit: 10, apiKey: effectiveApiKey });
-        if (!Array.isArray(history)) history = [];
+        const convMessages = await getConversation({
+          session_key,
+          account_id: accId || account_id || null,
+          thread_id: threadId || null,
+          peer_id: null,
+          // fetch newest first then slice
+          limit: 30,
+          before_ts: null,
+          order: 'desc',
+        });
+        const sorted = Array.isArray(convMessages) ? [...convMessages].reverse() : [];
+        const lastItems = sorted.slice(-10);
+        history = lastItems
+          .map((m) => {
+            const isSelf = Boolean(m.is_self);
+            const role = isSelf ? 'assistant' : 'user';
+            const messageText = typeof m.content === 'string' ? m.content : (m.content ? String(m.content) : '');
+            if (!messageText) return null;
+            return { role, message: messageText };
+          })
+          .filter(Boolean);
       } catch (_) { history = []; }
 
       resp = await chatWithMobileChatbot({
